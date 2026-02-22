@@ -1,0 +1,26 @@
+# Zig build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test_*.csv
+*.tmp
+
+# Binaries
+sieswi
+*.exe
+*.dll
+*.so
+*.dylib
