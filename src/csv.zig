@@ -6,7 +6,7 @@ pub const CsvReader = struct {
     file: std.fs.File,
     allocator: Allocator,
     delimiter: u8,
-    buffer: [4096]u8,
+    buffer: [262144]u8, // Increased to 256KB for fewer syscalls
     buffer_pos: usize,
     buffer_len: usize,
     eof: bool,
@@ -147,7 +147,7 @@ pub const FastCsvReader = struct {
     allocator: Allocator,
     delimiter: u8,
     line_buffer: std.ArrayList(u8),
-    buffer: [4096]u8,
+    buffer: [262144]u8, // Increased to 256KB to match CsvReader
     buffer_pos: usize,
     buffer_len: usize,
     eof: bool,
@@ -229,47 +229,69 @@ pub const FastCsvReader = struct {
     }
 };
 
-/// CSV writer
+/// CSV writer with buffering
 pub const CsvWriter = struct {
     file: std.fs.File,
     delimiter: u8,
+    buffer: [1048576]u8, // 1MB buffer for fewer write syscalls
+    buffer_pos: usize,
 
     pub fn init(file: std.fs.File) CsvWriter {
         return CsvWriter{
             .file = file,
             .delimiter = ',',
+            .buffer = undefined,
+            .buffer_pos = 0,
         };
+    }
+
+    fn writeToBuffer(self: *CsvWriter, data: []const u8) !void {
+        var remaining = data;
+        while (remaining.len > 0) {
+            const space_left = self.buffer.len - self.buffer_pos;
+            if (space_left == 0) {
+                try self.flush();
+                continue;
+            }
+
+            const to_copy = @min(remaining.len, space_left);
+            @memcpy(self.buffer[self.buffer_pos..][0..to_copy], remaining[0..to_copy]);
+            self.buffer_pos += to_copy;
+            remaining = remaining[to_copy..];
+        }
     }
 
     pub fn writeRecord(self: *CsvWriter, fields: []const []const u8) !void {
         for (fields, 0..) |field, i| {
             if (i > 0) {
-                _ = try self.file.write(&[_]u8{self.delimiter});
+                try self.writeToBuffer(&[_]u8{self.delimiter});
             }
 
             // Check if field needs quoting
             const needs_quotes = std.mem.indexOfAny(u8, field, ",\"\r\n") != null;
             if (needs_quotes) {
-                _ = try self.file.write("\"");
+                try self.writeToBuffer("\"");
                 // Escape quotes
                 for (field) |c| {
                     if (c == '"') {
-                        _ = try self.file.write("\"\"");
+                        try self.writeToBuffer("\"\"");
                     } else {
-                        _ = try self.file.write(&[_]u8{c});
+                        try self.writeToBuffer(&[_]u8{c});
                     }
                 }
-                _ = try self.file.write("\"");
+                try self.writeToBuffer("\"");
             } else {
-                _ = try self.file.write(field);
+                try self.writeToBuffer(field);
             }
         }
-        _ = try self.file.write("\n");
+        try self.writeToBuffer("\n");
     }
 
     pub fn flush(self: *CsvWriter) !void {
-        // No-op for direct file writer (no buffering in Zig 0.15)
-        _ = self;
+        if (self.buffer_pos > 0) {
+            _ = try self.file.write(self.buffer[0..self.buffer_pos]);
+            self.buffer_pos = 0;
+        }
     }
 };
 

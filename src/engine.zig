@@ -1,6 +1,9 @@
 const std = @import("std");
 const parser = @import("parser.zig");
 const csv = @import("csv.zig");
+const bulk_csv = @import("bulk_csv.zig");
+const mmap_engine = @import("mmap_engine.zig");
+const parallel_mmap = @import("parallel_mmap.zig");
 const Allocator = std.mem.Allocator;
 
 /// Execute a SQL query on a CSV file
@@ -23,17 +26,25 @@ pub fn execute(allocator: Allocator, query: parser.Query, output_file: std.fs.Fi
     const file = try std.fs.cwd().openFile(query.file_path, .{});
     defer file.close();
 
-    // Check file size for parallel processing decision
+    // Check file size for processing strategy
     const file_stat = try file.stat();
-    const use_parallel = file_stat.size > 10 * 1024 * 1024 and // > 10MB
-        (query.limit < 0 or query.limit >= 10000); // Large or no limit
 
-    if (use_parallel) {
-        // TODO: Implement parallel execution
-        std.debug.print("Parallel execution not yet implemented, falling back to sequential\n", .{});
+    // Use parallel memory-mapped I/O for large files (2+ cores, no LIMIT)
+    if (file_stat.size > 10 * 1024 * 1024 and (query.limit < 0 or query.limit > 100000)) {
+        const num_cores = try std.Thread.getCpuCount();
+        if (num_cores > 1) {
+            try parallel_mmap.executeParallelMapped(allocator, query, file, output_file);
+            return;
+        }
     }
 
-    // Sequential execution
+    // Use memory-mapped I/O for medium-large files
+    if (file_stat.size > 5 * 1024 * 1024) {
+        try mmap_engine.executeMapped(allocator, query, file, output_file);
+        return;
+    }
+
+    // Sequential execution for smaller files
     try executeSequential(allocator, query, file, output_file);
 }
 
@@ -44,7 +55,10 @@ fn executeSequential(
     input_file: std.fs.File,
     output_file: std.fs.File,
 ) !void {
-    var reader = csv.CsvReader.init(allocator, input_file);
+    // Use bulk CSV reader for much better performance
+    var reader = try bulk_csv.BulkCsvReader.init(allocator, input_file);
+    defer reader.deinit();
+
     var writer = csv.CsvWriter.init(output_file);
 
     // Read header
@@ -55,18 +69,21 @@ fn executeSequential(
     var column_map = std.StringHashMap(usize).init(allocator);
     defer column_map.deinit();
 
+    // Build lowercase header once for WHERE clause evaluation
+    var lower_header = try allocator.alloc([]u8, header.len);
+    defer {
+        for (lower_header) |lower_name| {
+            allocator.free(lower_name);
+        }
+        allocator.free(lower_header);
+    }
+
     for (header, 0..) |col_name, idx| {
         // Store lowercase version for case-insensitive lookup
         const lower_name = try allocator.alloc(u8, col_name.len);
-        defer allocator.free(lower_name);
         _ = std.ascii.lowerString(lower_name, col_name);
-        try column_map.put(try allocator.dupe(u8, lower_name), idx);
-    }
-    defer {
-        var it = column_map.keyIterator();
-        while (it.next()) |key| {
-            allocator.free(key.*);
-        }
+        lower_header[idx] = lower_name;
+        try column_map.put(lower_name, idx);
     }
 
     // Determine output columns
@@ -109,19 +126,10 @@ fn executeSequential(
             var row_map = std.StringHashMap([]const u8).init(allocator);
             defer row_map.deinit();
 
-            // Build row map with lowercase column names
-            for (header, 0..) |col_name, idx| {
+            // Build row map using pre-computed lowercase column names
+            for (lower_header, 0..) |lower_name, idx| {
                 if (idx < record.len) {
-                    const lower_name = try allocator.alloc(u8, col_name.len);
-                    defer allocator.free(lower_name);
-                    _ = std.ascii.lowerString(lower_name, col_name);
-                    try row_map.put(try allocator.dupe(u8, lower_name), record[idx]);
-                }
-            }
-            defer {
-                var it = row_map.keyIterator();
-                while (it.next()) |key| {
-                    allocator.free(key.*);
+                    try row_map.put(lower_name, record[idx]);
                 }
             }
 
@@ -146,8 +154,8 @@ fn executeSequential(
             break;
         }
 
-        // Flush periodically
-        if (@rem(rows_written, 8192) == 0) {
+        // Flush periodically (less often with 1MB buffer)
+        if (@rem(rows_written, 32768) == 0) {
             try writer.flush();
         }
     }
@@ -173,17 +181,20 @@ fn executeFromStdin(
     var column_map = std.StringHashMap(usize).init(allocator);
     defer column_map.deinit();
 
+    // Build lowercase header once for WHERE clause evaluation
+    var lower_header = try allocator.alloc([]u8, header.len);
+    defer {
+        for (lower_header) |lower_name| {
+            allocator.free(lower_name);
+        }
+        allocator.free(lower_header);
+    }
+
     for (header, 0..) |col_name, idx| {
         const lower_name = try allocator.alloc(u8, col_name.len);
-        defer allocator.free(lower_name);
         _ = std.ascii.lowerString(lower_name, col_name);
-        try column_map.put(try allocator.dupe(u8, lower_name), idx);
-    }
-    defer {
-        var it = column_map.keyIterator();
-        while (it.next()) |key| {
-            allocator.free(key.*);
-        }
+        lower_header[idx] = lower_name;
+        try column_map.put(lower_name, idx);
     }
 
     // Determine output columns
@@ -224,18 +235,10 @@ fn executeFromStdin(
             var row_map = std.StringHashMap([]const u8).init(allocator);
             defer row_map.deinit();
 
-            for (header, 0..) |col_name, idx| {
+            // Build row map using pre-computed lowercase column names
+            for (lower_header, 0..) |lower_name, idx| {
                 if (idx < record.len) {
-                    const lower_name = try allocator.alloc(u8, col_name.len);
-                    defer allocator.free(lower_name);
-                    _ = std.ascii.lowerString(lower_name, col_name);
-                    try row_map.put(try allocator.dupe(u8, lower_name), record[idx]);
-                }
-            }
-            defer {
-                var it = row_map.keyIterator();
-                while (it.next()) |key| {
-                    allocator.free(key.*);
+                    try row_map.put(lower_name, record[idx]);
                 }
             }
 
