@@ -16,7 +16,7 @@ pub fn main() !void {
     }
 
     const file_path = args[1];
-    
+
     std.debug.print("Benchmarking CSV parsing on: {s}\n", .{file_path});
     std.debug.print("===========================================\n\n", .{});
 
@@ -32,7 +32,7 @@ pub fn main() !void {
 
 fn benchmarkOurReader(_: std.mem.Allocator, file_path: []const u8) !void {
     var timer = try std.time.Timer.start();
-    
+
     const file = try std.fs.cwd().openFile(file_path, .{});
     defer file.close();
 
@@ -56,7 +56,7 @@ fn benchmarkOurReader(_: std.mem.Allocator, file_path: []const u8) !void {
 
     const elapsed = timer.read();
     const ms = @as(f64, @floatFromInt(elapsed)) / 1_000_000.0;
-    
+
     std.debug.print("1. Buffered Reader (256KB buffer):\n", .{});
     std.debug.print("   Rows: {d}\n", .{row_count});
     std.debug.print("   Fields: {d}\n", .{field_count});
@@ -66,7 +66,7 @@ fn benchmarkOurReader(_: std.mem.Allocator, file_path: []const u8) !void {
 
 fn benchmarkNaive(allocator: std.mem.Allocator, file_path: []const u8) !void {
     var timer = try std.time.Timer.start();
-    
+
     const file = try std.fs.cwd().openFile(file_path, .{});
     defer file.close();
 
@@ -93,13 +93,13 @@ fn benchmarkNaive(allocator: std.mem.Allocator, file_path: []const u8) !void {
             }
             field_count += 1;
         }
-        
+
         if (line_buf.items.len == 0 and (try file.read(&one_byte)) == 0) break;
     }
 
     const elapsed = timer.read();
     const ms = @as(f64, @floatFromInt(elapsed)) / 1_000_000.0;
-    
+
     std.debug.print("2. Naive (line-by-line with ArrayList):\n", .{});
     std.debug.print("   Rows: {d}\n", .{row_count});
     std.debug.print("   Fields: {d}\n", .{field_count});
@@ -110,12 +110,12 @@ fn benchmarkNaive(allocator: std.mem.Allocator, file_path: []const u8) !void {
 fn benchmarkMmap(allocator: std.mem.Allocator, file_path: []const u8) !void {
     _ = allocator;
     var timer = try std.time.Timer.start();
-    
+
     const file = try std.fs.cwd().openFile(file_path, .{});
     defer file.close();
 
     const file_size = (try file.stat()).size;
-    
+
     // Memory-map the file
     const mapped = try std.posix.mmap(
         null,
@@ -128,7 +128,7 @@ fn benchmarkMmap(allocator: std.mem.Allocator, file_path: []const u8) !void {
     defer std.posix.munmap(mapped);
 
     const data = mapped[0..file_size];
-    
+
     var row_count: usize = 0;
     var field_count: usize = 0;
 
@@ -143,13 +143,13 @@ fn benchmarkMmap(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
     const elapsed = timer.read();
     const ms = @as(f64, @floatFromInt(elapsed)) / 1_000_000.0;
-    
+
     std.debug.print("3. Memory-Mapped (zero-copy scan):\n", .{});
     std.debug.print("   Rows: {d}\n", .{row_count});
     std.debug.print("   Fields: {d}\n", .{field_count});
     std.debug.print("   Time: {d:.2}ms\n", .{ms});
     std.debug.print("   Speed: {d:.0} rows/sec\n\n", .{@as(f64, @floatFromInt(row_count)) / (ms / 1000.0)});
-    
+
     const mb = @as(f64, @floatFromInt(file_size)) / (1024.0 * 1024.0);
     const throughput = mb / (ms / 1000.0);
     std.debug.print("   Throughput: {d:.0} MB/sec\n", .{throughput});
