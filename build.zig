@@ -46,6 +46,33 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run CSV parsing benchmark");
     bench_step.dependOn(&bench_run.step);
 
+    // Example executables for library users
+    const csv_example = b.addExecutable(.{
+        .name = "csv_reader_example",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .root_source_file = b.path("examples/csv_reader_example.zig"),
+        }),
+    });
+    
+    // Add src/ as a module so examples can import from it
+    const csv_module = b.addModule("csv", .{
+        .root_source_file = b.path("src/csv.zig"),
+    });
+    csv_example.root_module.addImport("csv", csv_module);
+    b.installArtifact(csv_example);
+
+    const mmap_example = b.addExecutable(.{
+        .name = "mmap_csv_example",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .root_source_file = b.path("examples/mmap_csv_example.zig"),
+        }),
+    });
+    b.installArtifact(mmap_example);
+
     // Tests
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{

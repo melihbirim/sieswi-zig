@@ -305,6 +305,11 @@ zig build test
 # Run CSV parsing benchmark
 zig build bench -Doptimize=ReleaseFast -- your_file.csv
 
+# Build and run example programs
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/csv_reader_example test.csv
+./zig-out/bin/mmap_csv_example large_file.csv
+
 # Run with arguments
 zig build run -- "SELECT * FROM 'test.csv' LIMIT 5"
 ```
