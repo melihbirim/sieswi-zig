@@ -79,7 +79,7 @@ pub const BulkCsvReader = struct {
             if (newline_pos) |pos| {
                 // Found a complete line
                 var line_end = search_start + pos;
-                
+
                 // Trim \r if present
                 if (line_end > search_start and self.buffer[line_end - 1] == '\r') {
                     line_end -= 1;
@@ -101,7 +101,7 @@ pub const BulkCsvReader = struct {
                     }
                     return null;
                 }
-                
+
                 // Need to read more data
                 try self.fillBuffer();
                 if (self.eof and self.line_start >= self.buffer_len) {

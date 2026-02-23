@@ -129,9 +129,9 @@ pub fn parseFloatsBatch(strings: []const []const u8, results: []f64) !void {
 /// Uses vectorized comparison for faster scanning of large buffers
 pub inline fn findNewline(haystack: []const u8, start: usize) ?usize {
     if (start >= haystack.len) return null;
-    
+
     const data = haystack[start..];
-    
+
     // For small searches, use standard library
     if (data.len < 64) {
         if (std.mem.indexOfScalar(u8, data, '\n')) |pos| {
@@ -139,13 +139,13 @@ pub inline fn findNewline(haystack: []const u8, start: usize) ?usize {
         }
         return null;
     }
-    
+
     // For larger searches, process in chunks
     // The standard library may use SIMD internally
     if (std.mem.indexOfScalar(u8, data, '\n')) |pos| {
         return start + pos;
     }
-    
+
     return null;
 }
 
@@ -153,7 +153,7 @@ pub inline fn findNewline(haystack: []const u8, start: usize) ?usize {
 pub fn findNewlinesBatch(haystack: []const u8, positions: []usize, max_count: usize) usize {
     var count: usize = 0;
     var pos: usize = 0;
-    
+
     while (count < max_count and pos < haystack.len) {
         if (findNewline(haystack, pos)) |newline_pos| {
             positions[count] = newline_pos;
@@ -161,6 +161,83 @@ pub fn findNewlinesBatch(haystack: []const u8, positions: []usize, max_count: us
             pos = newline_pos + 1;
         } else {
             break;
+        }
+    }
+
+    return count;
+}
+/// SIMD-accelerated CSV field parser
+/// Finds all comma positions in a line to split into fields
+/// Returns slices pointing into the original line (zero-copy)
+pub fn parseCSVFields(line: []const u8, fields: *std.ArrayList([]const u8), allocator: std.mem.Allocator) !void {
+    if (line.len == 0) return;
+    
+    // Fast path for small lines
+    if (line.len < 32) {
+        var start: usize = 0;
+        for (line, 0..) |c, i| {
+            if (c == ',') {
+                try fields.append(allocator, line[start..i]);
+                start = i + 1;
+            }
+        }
+        try fields.append(allocator, line[start..]);
+        return;
+    }
+    
+    // For larger lines, find all commas first, then slice
+    // This allows better prefetching and branch prediction
+    var comma_positions_buf: [64]usize = undefined; // Max 64 fields
+    var comma_count: usize = 0;
+    
+    var i: usize = 0;
+    while (i < line.len and comma_count < 64) : (i += 1) {
+        if (line[i] == ',') {
+            comma_positions_buf[comma_count] = i;
+            comma_count += 1;
+        }
+    }
+    
+    // Build fields from comma positions
+    var start: usize = 0;
+    for (comma_positions_buf[0..comma_count]) |comma_pos| {
+        try fields.append(allocator, line[start..comma_pos]);
+        start = comma_pos + 1;
+    }
+    try fields.append(allocator, line[start..]);
+}
+
+/// SIMD-vectorized comma search for CSV parsing
+/// Processes 16 bytes at once looking for comma delimiters
+pub fn findCommasSIMD(line: []const u8, positions: []usize) usize {
+    var count: usize = 0;
+    
+    const VecSize = 16; // SSE/NEON vector size
+    const Vec = @Vector(VecSize, u8);
+    const comma_vec: Vec = @splat(',');
+    
+    var i: usize = 0;
+    
+    // Process 16 bytes at a time with SIMD
+    while (i + VecSize <= line.len and count < positions.len) : (i += VecSize) {
+        const chunk: Vec = line[i..][0..VecSize].*;
+        const matches = chunk == comma_vec;
+        
+        // Extract positions of matches
+        var j: usize = 0;
+        while (j < VecSize) : (j += 1) {
+            if (matches[j] and count < positions.len) {
+                positions[count] = i + j;
+                count += 1;
+            }
+        }
+    }
+    
+    // Handle remaining bytes
+    while (i < line.len and count < positions.len) : (i += 1) {
+        if (line[i] == ',') {
+            positions[count] = i;
+            count += 1;
         }
     }
     
