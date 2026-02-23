@@ -27,6 +27,25 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
+    // Benchmark executables
+    const csv_bench = b.addExecutable(.{
+        .name = "csv_parse_bench",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .root_source_file = b.path("bench/csv_parse_bench.zig"),
+        }),
+    });
+    b.installArtifact(csv_bench);
+
+    const bench_run = b.addRunArtifact(csv_bench);
+    bench_run.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        bench_run.addArgs(args);
+    }
+    const bench_step = b.step("bench", "Run CSV parsing benchmark");
+    bench_step.dependOn(&bench_run.step);
+
     // Tests
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
