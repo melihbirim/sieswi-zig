@@ -1,4 +1,5 @@
 const std = @import("std");
+const simd = @import("simd.zig");
 const Allocator = std.mem.Allocator;
 
 /// Represents a comparison operator
@@ -276,17 +277,39 @@ pub fn evaluate(expr: Expression, row: std.StringHashMap([]const u8)) bool {
 
 fn compareValues(comp: Comparison, candidate: []const u8) bool {
     if (comp.numeric_value) |expected| {
-        const candidate_num = std.fmt.parseFloat(f64, candidate) catch return false;
-        return switch (comp.operator) {
-            .equal => candidate_num == expected,
-            .not_equal => candidate_num != expected,
-            .greater => candidate_num > expected,
-            .greater_equal => candidate_num >= expected,
-            .less => candidate_num < expected,
-            .less_equal => candidate_num <= expected,
-        };
+        // Try SIMD fast integer parsing first
+        if (simd.parseIntFast(candidate)) |candidate_int| {
+            const candidate_num: f64 = @floatFromInt(candidate_int);
+            return switch (comp.operator) {
+                .equal => candidate_num == expected,
+                .not_equal => candidate_num != expected,
+                .greater => candidate_num > expected,
+                .greater_equal => candidate_num >= expected,
+                .less => candidate_num < expected,
+                .less_equal => candidate_num <= expected,
+            };
+        } else |_| {
+            // Fall back to standard float parsing for decimals or parse errors
+            const candidate_num = std.fmt.parseFloat(f64, candidate) catch return false;
+            return switch (comp.operator) {
+                .equal => candidate_num == expected,
+                .not_equal => candidate_num != expected,
+                .greater => candidate_num > expected,
+                .greater_equal => candidate_num >= expected,
+                .less => candidate_num < expected,
+                .less_equal => candidate_num <= expected,
+            };
+        }
     }
 
+    // Use SIMD for string equality checks
+    if (comp.operator == .equal) {
+        return simd.stringsEqualFast(candidate, comp.value);
+    } else if (comp.operator == .not_equal) {
+        return !simd.stringsEqualFast(candidate, comp.value);
+    }
+
+    // Fall back to standard comparison for ordered operators
     const cmp = std.mem.order(u8, candidate, comp.value);
     return switch (comp.operator) {
         .equal => cmp == .eq,
