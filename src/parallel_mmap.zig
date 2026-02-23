@@ -273,19 +273,19 @@ fn processChunk(ctx: *WorkerContext) !void {
             if (ctx.query.where_expr) |expr| {
                 if (expr == .comparison) {
                     const comp = expr.comparison;
-                    
+
                     // Direct column access by index
                     if (ctx.where_column_idx) |col_idx| {
                         if (col_idx < fields.items.len) {
                             const field_value = fields.items[col_idx];
-                            
+
                             // Fast numeric comparison
                             if (comp.numeric_value) |threshold| {
                                 const val = std.fmt.parseFloat(f64, field_value) catch {
                                     line_start += line_end + 1;
                                     continue;
                                 };
-                                
+
                                 const matches = switch (comp.operator) {
                                     .equal => val == threshold,
                                     .not_equal => val != threshold,
@@ -294,7 +294,7 @@ fn processChunk(ctx: *WorkerContext) !void {
                                     .less => val < threshold,
                                     .less_equal => val <= threshold,
                                 };
-                                
+
                                 if (!matches) {
                                     line_start += line_end + 1;
                                     continue;
@@ -315,7 +315,7 @@ fn processChunk(ctx: *WorkerContext) !void {
                                         };
                                     },
                                 };
-                                
+
                                 if (!matches) {
                                     line_start += line_end + 1;
                                     continue;
@@ -359,7 +359,7 @@ fn processChunk(ctx: *WorkerContext) !void {
                 const field = if (idx < fields.items.len) fields.items[idx] else "";
                 output_row[j] = try ctx.allocator.dupe(u8, field);
             }
-            
+
             try ctx.result.append(ctx.allocator, output_row);
         }
 

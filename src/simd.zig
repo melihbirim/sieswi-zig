@@ -171,7 +171,7 @@ pub fn findNewlinesBatch(haystack: []const u8, positions: []usize, max_count: us
 /// Returns slices pointing into the original line (zero-copy)
 pub fn parseCSVFields(line: []const u8, fields: *std.ArrayList([]const u8), allocator: std.mem.Allocator) !void {
     if (line.len == 0) return;
-    
+
     // Fast path for small lines
     if (line.len < 32) {
         var start: usize = 0;
@@ -184,12 +184,12 @@ pub fn parseCSVFields(line: []const u8, fields: *std.ArrayList([]const u8), allo
         try fields.append(allocator, line[start..]);
         return;
     }
-    
+
     // For larger lines, find all commas first, then slice
     // This allows better prefetching and branch prediction
     var comma_positions_buf: [64]usize = undefined; // Max 64 fields
     var comma_count: usize = 0;
-    
+
     var i: usize = 0;
     while (i < line.len and comma_count < 64) : (i += 1) {
         if (line[i] == ',') {
@@ -197,7 +197,7 @@ pub fn parseCSVFields(line: []const u8, fields: *std.ArrayList([]const u8), allo
             comma_count += 1;
         }
     }
-    
+
     // Build fields from comma positions
     var start: usize = 0;
     for (comma_positions_buf[0..comma_count]) |comma_pos| {
@@ -211,18 +211,18 @@ pub fn parseCSVFields(line: []const u8, fields: *std.ArrayList([]const u8), allo
 /// Processes 16 bytes at once looking for comma delimiters
 pub fn findCommasSIMD(line: []const u8, positions: []usize) usize {
     var count: usize = 0;
-    
+
     const VecSize = 16; // SSE/NEON vector size
     const Vec = @Vector(VecSize, u8);
     const comma_vec: Vec = @splat(',');
-    
+
     var i: usize = 0;
-    
+
     // Process 16 bytes at a time with SIMD
     while (i + VecSize <= line.len and count < positions.len) : (i += VecSize) {
         const chunk: Vec = line[i..][0..VecSize].*;
         const matches = chunk == comma_vec;
-        
+
         // Extract positions of matches
         var j: usize = 0;
         while (j < VecSize) : (j += 1) {
@@ -232,7 +232,7 @@ pub fn findCommasSIMD(line: []const u8, positions: []usize) usize {
             }
         }
     }
-    
+
     // Handle remaining bytes
     while (i < line.len and count < positions.len) : (i += 1) {
         if (line[i] == ',') {
@@ -240,6 +240,6 @@ pub fn findCommasSIMD(line: []const u8, positions: []usize) usize {
             count += 1;
         }
     }
-    
+
     return count;
 }

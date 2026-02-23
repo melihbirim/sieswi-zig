@@ -4,8 +4,6 @@ const csv = @import("csv.zig");
 const bulk_csv = @import("bulk_csv.zig");
 const mmap_engine = @import("mmap_engine.zig");
 const parallel_mmap = @import("parallel_mmap.zig");
-const columnar = @import("columnar.zig");
-const parallel = @import("parallel.zig");
 const Allocator = std.mem.Allocator;
 
 /// Execute a SQL query on a CSV file
@@ -30,19 +28,6 @@ pub fn execute(allocator: Allocator, query: parser.Query, output_file: std.fs.Fi
 
     // Check file size for processing strategy
     const file_stat = try file.stat();
-
-    // Check if query would benefit from columnar processing (numeric WHERE on large data)
-    const use_columnar = file_stat.size > 200 * 1024 * 1024 and // > 200MB (TEMP: disabled for testing)
-        query.where_expr != null and
-        query.where_expr.? == .comparison and
-        query.where_expr.?.comparison.numeric_value != null and
-        (query.limit < 0 or query.limit > 50000);
-
-    if (use_columnar) {
-        // Columnar processing with SIMD vectorization
-        try columnar.executeColumnar(allocator, query, file, output_file);
-        return;
-    }
 
     // Use parallel memory-mapped I/O for large files (2+ cores, no LIMIT)
     if (file_stat.size > 10 * 1024 * 1024 and (query.limit < 0 or query.limit > 100000)) {
