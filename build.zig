@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("examples/csv_reader_example.zig"),
         }),
     });
-    
+
     // Add src/ as a module so examples can import from it
     const csv_module = b.addModule("csv", .{
         .root_source_file = b.path("src/csv.zig"),
