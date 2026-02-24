@@ -79,3 +79,35 @@ test "simple test" {
     try list.append(std.testing.allocator, 42);
     try std.testing.expectEqual(@as(i32, 42), list.pop());
 }
+
+// TDD Test 1: Query.deinit with SELECT * should not crash
+test "Query deinit with SELECT *" {
+    const allocator = std.testing.allocator;
+
+    var query = try parser.parse(allocator, "SELECT * FROM 'test.csv'");
+    defer query.deinit();
+
+    try std.testing.expect(query.all_columns);
+    try std.testing.expectEqual(@as(usize, 0), query.columns.len);
+}
+
+// TDD Test 2: Query.deinit with no GROUP BY should not crash
+test "Query deinit without GROUP BY" {
+    const allocator = std.testing.allocator;
+
+    var query = try parser.parse(allocator, "SELECT id, name FROM 'test.csv' WHERE age > 30");
+    defer query.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), query.group_by.len);
+}
+
+// TDD Test 3: Query.deinit with explicit columns and GROUP BY should work
+test "Query deinit with columns and GROUP BY" {
+    const allocator = std.testing.allocator;
+
+    var query = try parser.parse(allocator, "SELECT name, count FROM 'test.csv' GROUP BY name");
+    defer query.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), query.columns.len);
+    try std.testing.expectEqual(@as(usize, 1), query.group_by.len);
+}

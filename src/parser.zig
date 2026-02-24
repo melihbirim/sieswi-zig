@@ -99,12 +99,14 @@ pub const Query = struct {
 
 /// Parse a SQL query string
 pub fn parse(allocator: Allocator, input: []const u8) !Query {
+    // FIXED: Use undefined instead of static slices for initialization
+    // These will all be properly allocated before the function returns
     var query = Query{
-        .columns = &[_][]u8{},
+        .columns = undefined,
         .all_columns = false,
-        .file_path = &[_]u8{},
+        .file_path = undefined,
         .where_expr = null,
-        .group_by = &[_][]u8{},
+        .group_by = undefined,
         .limit = -1,
         .allocator = allocator,
     };
@@ -123,7 +125,8 @@ pub fn parse(allocator: Allocator, input: []const u8) !Query {
     // Check for SELECT *
     if (std.mem.eql(u8, columns_part, "*")) {
         query.all_columns = true;
-        query.columns = &[_][]u8{};
+        // FIXED: Always allocate empty slice instead of using static slice
+        query.columns = try allocator.alloc([]u8, 0);
     } else {
         // Parse column list
         var col_list = std.ArrayList([]u8){};
@@ -185,7 +188,8 @@ pub fn parse(allocator: Allocator, input: []const u8) !Query {
         }
         query.group_by = try group_list.toOwnedSlice(allocator);
     } else {
-        query.group_by = &[_][]u8{};
+        // FIXED: Always allocate empty slice instead of using static slice
+        query.group_by = try allocator.alloc([]u8, 0);
     }
 
     // Parse LIMIT clause if present

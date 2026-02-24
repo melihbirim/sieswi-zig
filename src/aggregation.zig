@@ -183,7 +183,7 @@ pub fn parseAggregateFunc(allocator: Allocator, expr: []const u8) !?AggregateFun
 
     // Determine function type
     var func_type: AggregateType = undefined;
-    var func_lower = try allocator.alloc(u8, func_name.len);
+    const func_lower = try allocator.alloc(u8, func_name.len);
     defer allocator.free(func_lower);
     _ = std.ascii.lowerString(func_lower, func_name);
 
