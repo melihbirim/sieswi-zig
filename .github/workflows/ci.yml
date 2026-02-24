@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, fix/code-review-issues ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test & Build
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: goto-bus-stop/setup-zig@v2
+      with:
+        version: 0.15.2
+        
+    - name: Cache Zig artifacts
+      uses: actions/cache@v4
+      with:
+        path: |
+          .zig-cache
+          zig-out
+        key: ${{ runner.os }}-zig-${{ hashFiles('build.zig') }}
+        restore-keys: |
+          ${{ runner.os }}-zig-
+    
+    - name: Run tests
+      run: zig build test --summary all
+      
+    - name: Build (Debug)
+      run: zig build
+      
+    - name: Build (ReleaseFast)
+      run: zig build -Doptimize=ReleaseFast
+      
+    - name: Verify executable
+      run: |
+        ./zig-out/bin/sieswi --version
+        
+    - name: Generate test CSV
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        echo "id,name,age" > test_ci.csv
+        echo "1,Alice,30" >> test_ci.csv
+        echo "2,Bob,25" >> test_ci.csv
+        
+    - name: Test query execution
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        ./zig-out/bin/sieswi "SELECT * FROM 'test_ci.csv'" | tee output.csv
+        [ $(wc -l < output.csv) -eq 3 ] && echo "✅ Query test passed"
+
+  lint:
+    name: Format Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: goto-bus-stop/setup-zig@v2
+      with:
+        version: 0.15.2
+        
+    - name: Check formatting
+      run: zig fmt --check src/ tests/ build.zig

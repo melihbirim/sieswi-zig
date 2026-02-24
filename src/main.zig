@@ -72,10 +72,3 @@ fn getQueryFromArgsOrStdin(allocator: Allocator, args: [][:0]u8) ![]u8 {
     allocator.free(query);
     return result;
 }
-
-test "simple test" {
-    var list = std.ArrayList(i32){};
-    defer list.deinit(std.testing.allocator);
-    try list.append(std.testing.allocator, 42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}

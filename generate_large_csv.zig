@@ -1,14 +1,10 @@
 const std = @import("std");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
     const stdout = std.fs.File{ .handle = std.posix.STDOUT_FILENO };
 
     // Write header
-    _ = try stdout.write("id,name,age,city,salary,department\n");
+    try stdout.writeAll("id,name,age,city,salary,department\n");
 
     const cities = [_][]const u8{ "NYC", "SF", "LA", "Chicago", "Boston", "Seattle", "Austin", "Denver" };
     const departments = [_][]const u8{ "Engineering", "Sales", "Marketing", "HR", "Finance", "Operations" };
@@ -16,6 +12,9 @@ pub fn main() !void {
 
     var prng = std.Random.DefaultPrng.init(42);
     const random = prng.random();
+
+    // Use stack buffer to avoid allocations
+    var line_buffer: [256]u8 = undefined;
 
     var i: u32 = 1;
     while (i <= 1_000_000) : (i += 1) {
@@ -25,14 +24,15 @@ pub fn main() !void {
         const salary = random.intRangeAtMost(u32, 40000, 150000);
         const dept = departments[random.intRangeAtMost(usize, 0, departments.len - 1)];
 
-        const line = try std.fmt.allocPrint(allocator, "{d},{s},{d},{s},{d},{s}\n", .{ i, name, age, city, salary, dept });
-        defer allocator.free(line);
+        // Format into stack buffer (no allocation!)
+        const line = try std.fmt.bufPrint(&line_buffer, "{d},{s},{d},{s},{d},{s}\n", .{ i, name, age, city, salary, dept });
 
-        _ = try stdout.write(line);
+        try stdout.writeAll(line);
 
         if (@rem(i, 50000) == 0) {
             std.debug.print("Generated {d} rows...\r", .{i});
         }
     }
+
     std.debug.print("\nDone! Generated 1,000,000 rows\n", .{});
 }
