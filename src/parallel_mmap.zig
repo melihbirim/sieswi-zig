@@ -10,16 +10,21 @@ const WorkChunk = struct {
     thread_id: usize,
 };
 
+/// Lightweight sort entry — zero-copy slices into mmap data
+const SortLine = struct {
+    numeric_key: f64, // pre-parsed numeric value (NaN if not numeric)
+    sort_key: []const u8, // the sort column value (slice into mmap)
+    line: []const u8, // the full raw CSV line (slice into mmap)
+};
+
 const WorkerResult = struct {
-    // Store output rows directly as field arrays (not full CSV lines)
+    // Store output rows as arrays of zero-copy slices into mmap data
     rows: std.ArrayList([][]const u8),
     allocator: Allocator,
 
     fn deinit(self: *WorkerResult) void {
         for (self.rows.items) |row| {
-            for (row) |field| {
-                self.allocator.free(field);
-            }
+            // Only free the outer array — field slices point into mmap data
             self.allocator.free(row);
         }
         self.rows.deinit(self.allocator);
@@ -32,10 +37,22 @@ const WorkerContext = struct {
     query: parser.Query,
     lower_header: []const []const u8,
     output_indices: []const usize,
-    where_column_idx: ?usize, // Column index for WHERE clause (if applicable)
+    where_column_idx: ?usize,
     result: std.ArrayList([][]const u8),
     allocator: Allocator,
     mutex: *std.Thread.Mutex,
+};
+
+/// Worker context for ORDER BY — stores lightweight SortLine entries
+const SortWorkerContext = struct {
+    data: []const u8,
+    chunk: WorkChunk,
+    query: parser.Query,
+    lower_header: []const []const u8,
+    where_column_idx: ?usize,
+    order_by_col_idx: usize, // column index in the raw CSV (not output)
+    result: std.ArrayList(SortLine),
+    allocator: Allocator,
 };
 
 /// Parallel memory-mapped CSV processing
@@ -143,95 +160,255 @@ pub fn executeParallelMapped(
     const num_cores = try std.Thread.getCpuCount();
     const num_threads = @min(num_cores, 8);
 
-    // Split into chunks
+    // Split into chunks aligned to line boundaries
     const chunk_size = data_len / num_threads;
-    var chunks = std.ArrayList(WorkChunk){};
-    defer chunks.deinit(allocator);
+    var chunks = try allocator.alloc(WorkChunk, num_threads);
+    defer allocator.free(chunks);
 
     for (0..num_threads) |i| {
         var start = data_start + (i * chunk_size);
         var end = if (i == num_threads - 1) data.len else data_start + ((i + 1) * chunk_size);
 
-        // Adjust chunk boundaries to line boundaries
         if (i > 0) {
-            // Find start of next line
             if (std.mem.indexOfScalarPos(u8, data, start, '\n')) |newline| {
                 start = newline + 1;
             }
         }
-
         if (i < num_threads - 1) {
-            // Find end of current line
             if (std.mem.indexOfScalarPos(u8, data, end, '\n')) |newline| {
                 end = newline + 1;
             }
         }
 
-        try chunks.append(allocator, WorkChunk{
-            .start = start,
-            .end = end,
-            .thread_id = i,
-        });
+        chunks[i] = WorkChunk{ .start = start, .end = end, .thread_id = i };
     }
 
-    // Process chunks in parallel
-    var threads = try allocator.alloc(std.Thread, num_threads);
-    defer allocator.free(threads);
+    if (query.order_by) |order_by| {
+        // ===== ORDER BY path: lightweight SortLine entries (zero per-row allocs) =====
 
-    var contexts = try allocator.alloc(WorkerContext, num_threads);
-    defer allocator.free(contexts);
-
-    var mutex = std.Thread.Mutex{};
-
-    for (0..num_threads) |i| {
-        contexts[i] = WorkerContext{
-            .data = data,
-            .chunk = chunks.items[i],
-            .query = query,
-            .lower_header = lower_header,
-            .output_indices = output_indices.items,
-            .where_column_idx = where_column_idx,
-            .result = std.ArrayList([][]const u8){},
-            .allocator = allocator,
-            .mutex = &mutex,
-        };
-
-        threads[i] = try std.Thread.spawn(.{}, workerThread, .{&contexts[i]});
-    }
-
-    // Wait for all threads
-    for (threads) |thread| {
-        thread.join();
-    }
-
-    // Collect and write results (fields are already parsed!)
-    var total_written: usize = 0;
-    for (contexts) |*ctx| {
-        defer ctx.result.deinit(allocator);
-
-        for (ctx.result.items) |row| {
-            defer {
-                for (row) |field| {
-                    allocator.free(field);
-                }
-                allocator.free(row);
-            }
-
-            // Rows are already in output format - just write them
-            try writer.writeRecord(row);
-            total_written += 1;
-
-            if (query.limit >= 0 and total_written >= @as(usize, @intCast(query.limit))) {
+        // Find ORDER BY column index in raw CSV header
+        var order_by_raw_idx: ?usize = null;
+        for (lower_header, 0..) |name, idx| {
+            if (std.mem.eql(u8, name, order_by.column)) {
+                order_by_raw_idx = idx;
                 break;
             }
         }
+        if (order_by_raw_idx == null) return error.OrderByColumnNotFound;
 
-        if (query.limit >= 0 and total_written >= @as(usize, @intCast(query.limit))) {
-            break;
+        var threads = try allocator.alloc(std.Thread, num_threads);
+        defer allocator.free(threads);
+
+        var sort_contexts = try allocator.alloc(SortWorkerContext, num_threads);
+        defer allocator.free(sort_contexts);
+
+        for (0..num_threads) |i| {
+            sort_contexts[i] = SortWorkerContext{
+                .data = data,
+                .chunk = chunks[i],
+                .query = query,
+                .lower_header = lower_header,
+                .where_column_idx = where_column_idx,
+                .order_by_col_idx = order_by_raw_idx.?,
+                .result = std.ArrayList(SortLine){},
+                .allocator = allocator,
+            };
+            threads[i] = try std.Thread.spawn(.{}, sortWorkerThread, .{&sort_contexts[i]});
+        }
+
+        for (threads) |thread| thread.join();
+
+        // Merge all sort entries
+        var total_entries: usize = 0;
+        for (sort_contexts) |ctx| total_entries += ctx.result.items.len;
+
+        var all_entries = try std.ArrayList(SortLine).initCapacity(allocator, total_entries);
+        defer all_entries.deinit(allocator);
+
+        for (sort_contexts) |*ctx| {
+            all_entries.appendSliceAssumeCapacity(ctx.result.items);
+            ctx.result.deinit(allocator);
+        }
+
+        // Sort
+        const SortCtx = struct {
+            descending: bool,
+            pub fn lessThan(ctx: @This(), a: SortLine, b: SortLine) bool {
+                // Fast path: both numeric (pre-parsed, no parseFloat overhead)
+                const a_is_num = !std.math.isNan(a.numeric_key);
+                const b_is_num = !std.math.isNan(b.numeric_key);
+                if (a_is_num and b_is_num) {
+                    if (ctx.descending) return b.numeric_key < a.numeric_key else return a.numeric_key < b.numeric_key;
+                }
+                // Fallback: string comparison
+                if (ctx.descending) return std.mem.lessThan(u8, b.sort_key, a.sort_key) else return std.mem.lessThan(u8, a.sort_key, b.sort_key);
+            }
+        };
+
+        std.mem.sort(SortLine, all_entries.items, SortCtx{ .descending = order_by.order == .desc }, SortCtx.lessThan);
+
+        // Write top K rows — re-parse only these lines to extract output columns
+        var output_row = try allocator.alloc([]const u8, output_indices.items.len);
+        defer allocator.free(output_row);
+
+        var written: usize = 0;
+        for (all_entries.items) |entry| {
+            if (query.limit >= 0 and written >= @as(usize, @intCast(query.limit))) break;
+
+            // Parse the raw line to extract output columns
+            var field_buf: [256][]const u8 = undefined;
+            var field_count: usize = 0;
+            var field_iter = std.mem.splitScalar(u8, entry.line, ',');
+            while (field_iter.next()) |field| {
+                if (field_count >= field_buf.len) break;
+                field_buf[field_count] = field;
+                field_count += 1;
+            }
+
+            for (output_indices.items, 0..) |idx, j| {
+                output_row[j] = if (idx < field_count) field_buf[idx] else "";
+            }
+            try writer.writeRecord(output_row);
+            written += 1;
+        }
+    } else {
+        // ===== Non-ORDER BY path: original approach =====
+        var threads = try allocator.alloc(std.Thread, num_threads);
+        defer allocator.free(threads);
+
+        var contexts = try allocator.alloc(WorkerContext, num_threads);
+        defer allocator.free(contexts);
+
+        var mutex = std.Thread.Mutex{};
+
+        for (0..num_threads) |i| {
+            contexts[i] = WorkerContext{
+                .data = data,
+                .chunk = chunks[i],
+                .query = query,
+                .lower_header = lower_header,
+                .output_indices = output_indices.items,
+                .where_column_idx = where_column_idx,
+                .result = std.ArrayList([][]const u8){},
+                .allocator = allocator,
+                .mutex = &mutex,
+            };
+            threads[i] = try std.Thread.spawn(.{}, workerThread, .{&contexts[i]});
+        }
+
+        for (threads) |thread| thread.join();
+
+        var total_written: usize = 0;
+        for (contexts) |*ctx| {
+            defer ctx.result.deinit(allocator);
+
+            for (ctx.result.items) |row| {
+                defer allocator.free(row);
+
+                try writer.writeRecord(row);
+                total_written += 1;
+
+                if (query.limit >= 0 and total_written >= @as(usize, @intCast(query.limit))) break;
+            }
+
+            if (query.limit >= 0 and total_written >= @as(usize, @intCast(query.limit))) break;
         }
     }
 
     try writer.flush();
+}
+
+fn sortWorkerThread(ctx: *SortWorkerContext) void {
+    processSortChunk(ctx) catch |err| {
+        std.debug.print("Sort worker thread error: {}\n", .{err});
+    };
+}
+
+/// ORDER BY worker: collects {sort_key, raw_line} with zero per-row allocations
+fn processSortChunk(ctx: *SortWorkerContext) !void {
+    const chunk_data = ctx.data[ctx.chunk.start..ctx.chunk.end];
+    const order_col = ctx.order_by_col_idx;
+
+    var line_start: usize = 0;
+    while (line_start < chunk_data.len) {
+        const remaining = chunk_data[line_start..];
+        const line_end = std.mem.indexOfScalar(u8, remaining, '\n') orelse chunk_data.len - line_start;
+
+        var line = remaining[0..line_end];
+        if (line.len > 0 and line[line.len - 1] == '\r') {
+            line = line[0 .. line.len - 1];
+        }
+
+        if (line.len > 0) {
+            // Parse fields into stack buffer (zero-alloc)
+            var field_buf: [256][]const u8 = undefined;
+            var field_count: usize = 0;
+            var field_iter = std.mem.splitScalar(u8, line, ',');
+            while (field_iter.next()) |field| {
+                if (field_count >= field_buf.len) break;
+                field_buf[field_count] = field;
+                field_count += 1;
+            }
+
+            // Fast WHERE evaluation
+            if (ctx.query.where_expr) |expr| {
+                if (expr == .comparison) {
+                    const comp = expr.comparison;
+                    if (ctx.where_column_idx) |col_idx| {
+                        if (col_idx < field_count) {
+                            const field_value = field_buf[col_idx];
+                            if (comp.numeric_value) |threshold| {
+                                const val = std.fmt.parseFloat(f64, field_value) catch {
+                                    line_start += line_end + 1;
+                                    continue;
+                                };
+                                const matches = switch (comp.operator) {
+                                    .equal => val == threshold,
+                                    .not_equal => val != threshold,
+                                    .greater => val > threshold,
+                                    .greater_equal => val >= threshold,
+                                    .less => val < threshold,
+                                    .less_equal => val <= threshold,
+                                };
+                                if (!matches) {
+                                    line_start += line_end + 1;
+                                    continue;
+                                }
+                            } else {
+                                const matches = switch (comp.operator) {
+                                    .equal => std.mem.eql(u8, field_value, comp.value),
+                                    .not_equal => !std.mem.eql(u8, field_value, comp.value),
+                                    else => false,
+                                };
+                                if (!matches) {
+                                    line_start += line_end + 1;
+                                    continue;
+                                }
+                            }
+                        } else {
+                            line_start += line_end + 1;
+                            continue;
+                        }
+                    } else {
+                        line_start += line_end + 1;
+                        continue;
+                    }
+                }
+                // Note: complex WHERE (AND/OR) not supported in sort worker — parser guarantees simple comparisons for ORDER BY queries
+            }
+
+            // Extract sort key and pre-parse numeric value — zero per-row allocation!
+            const sort_key = if (order_col < field_count) field_buf[order_col] else "";
+            const numeric_key = std.fmt.parseFloat(f64, sort_key) catch std.math.nan(f64);
+            try ctx.result.append(ctx.allocator, SortLine{
+                .numeric_key = numeric_key,
+                .sort_key = sort_key,
+                .line = line,
+            });
+        }
+
+        line_start += line_end + 1;
+    }
 }
 
 fn workerThread(ctx: *WorkerContext) void {
@@ -353,11 +530,10 @@ fn processChunk(ctx: *WorkerContext) !void {
                 }
             }
 
-            // Build output row directly (project only requested columns)
+            // Build output row — zero-copy slices into mmap data (no field duplication)
             var output_row = try ctx.allocator.alloc([]const u8, ctx.output_indices.len);
             for (ctx.output_indices, 0..) |idx, j| {
-                const field = if (idx < fields.items.len) fields.items[idx] else "";
-                output_row[j] = try ctx.allocator.dupe(u8, field);
+                output_row[j] = if (idx < fields.items.len) fields.items[idx] else "";
             }
 
             try ctx.result.append(ctx.allocator, output_row);

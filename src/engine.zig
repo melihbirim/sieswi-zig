@@ -6,6 +6,47 @@ const mmap_engine = @import("mmap_engine.zig");
 const parallel_mmap = @import("parallel_mmap.zig");
 const Allocator = std.mem.Allocator;
 
+/// Result row for ORDER BY buffering — stores sort key + CSV line
+const SortEntry = struct {
+    numeric_key: f64, // pre-parsed numeric value (NaN if not numeric)
+    sort_key: []const u8, // slice into arena for the sort column value
+    line: []const u8, // slice into arena for the full CSV output line
+};
+
+/// Arena buffer for ORDER BY — single large allocation instead of per-field allocs
+const ArenaBuffer = struct {
+    data: []u8,
+    pos: usize,
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator, initial_size: usize) !ArenaBuffer {
+        return ArenaBuffer{
+            .data = try allocator.alloc(u8, initial_size),
+            .pos = 0,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ArenaBuffer) void {
+        self.allocator.free(self.data);
+    }
+
+    pub fn append(self: *ArenaBuffer, bytes: []const u8) ![]const u8 {
+        if (self.pos + bytes.len > self.data.len) {
+            // Grow by doubling
+            const new_size = @max(self.data.len * 2, self.pos + bytes.len);
+            const new_data = try self.allocator.alloc(u8, new_size);
+            @memcpy(new_data[0..self.pos], self.data[0..self.pos]);
+            self.allocator.free(self.data);
+            self.data = new_data;
+        }
+        const start = self.pos;
+        @memcpy(self.data[start .. start + bytes.len], bytes);
+        self.pos += bytes.len;
+        return self.data[start .. start + bytes.len];
+    }
+};
+
 /// Execute a SQL query on a CSV file
 pub fn execute(allocator: Allocator, query: parser.Query, output_file: std.fs.File) !void {
     // Check if reading from stdin
@@ -29,8 +70,8 @@ pub fn execute(allocator: Allocator, query: parser.Query, output_file: std.fs.Fi
     // Check file size for processing strategy
     const file_stat = try file.stat();
 
-    // Use parallel memory-mapped I/O for large files (2+ cores, no LIMIT)
-    if (file_stat.size > 10 * 1024 * 1024 and (query.limit < 0 or query.limit > 100000)) {
+    // Use parallel memory-mapped I/O for large files (2+ cores, no LIMIT unless ORDER BY)
+    if (file_stat.size > 10 * 1024 * 1024 and (query.limit < 0 or query.limit > 100000 or query.order_by != null)) {
         const num_cores = try std.Thread.getCpuCount();
         if (num_cores > 1) {
             try parallel_mmap.executeParallelMapped(allocator, query, file, output_file);
@@ -128,12 +169,50 @@ fn executeSequential(
         }
     }
 
+    // Buffer for ORDER BY support
+    var sort_entries: ?std.ArrayList(SortEntry) = null;
+    var arena: ?ArenaBuffer = null;
+    var order_by_column_idx: ?usize = null;
+    defer {
+        if (sort_entries) |*entries| entries.deinit(allocator);
+        if (arena) |*a| a.deinit();
+    }
+
+    // If ORDER BY is specified, prepare buffer and find column index
+    if (query.order_by) |order_by| {
+        sort_entries = std.ArrayList(SortEntry){};
+        arena = try ArenaBuffer.init(allocator, 1024 * 1024); // 1MB initial
+        // Find the ORDER BY column index in output columns
+        // order_by.column is already lowercase from parser
+        for (output_indices.items) |out_idx| {
+            if (out_idx < lower_header.len) {
+                if (std.mem.eql(u8, lower_header[out_idx], order_by.column)) {
+                    // Find position in output columns
+                    for (output_indices.items, 0..) |idx, pos| {
+                        if (idx == out_idx) {
+                            order_by_column_idx = pos;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        if (order_by_column_idx == null) {
+            return error.OrderByColumnNotFound;
+        }
+    }
+
     // Process rows
     var row_count: i32 = 0;
     var rows_written: i32 = 0;
 
-    while (try reader.readRecord()) |record| {
-        defer reader.freeRecord(record);
+    // Pre-allocate output row buffer (reused across all rows)
+    var output_row = try allocator.alloc([]const u8, output_indices.items.len);
+    defer allocator.free(output_row);
+
+    while (try reader.readRecordSlices()) |record| {
+        // Zero-copy: record slices point into reader buffer, no freeRecord needed
         row_count += 1;
 
         // OPTIMIZATION: Fast WHERE evaluation using direct index lookup
@@ -197,25 +276,82 @@ fn executeSequential(
             }
         }
 
-        // Project selected columns
-        var output_row = try allocator.alloc([]const u8, output_indices.items.len);
-        defer allocator.free(output_row);
-
+        // Project selected columns (reuse pre-allocated output_row)
         for (output_indices.items, 0..) |idx, i| {
             output_row[i] = if (idx < record.len) record[idx] else "";
         }
 
-        try writer.writeRecord(output_row);
-        rows_written += 1;
+        // Either buffer for ORDER BY or write directly
+        if (sort_entries) |*entries| {
+            // Build CSV line into arena and store sort key
+            const a = &(arena.?);
+            const sort_key = try a.append(output_row[order_by_column_idx.?]);
 
-        // Check LIMIT
-        if (query.limit >= 0 and rows_written >= query.limit) {
-            break;
+            // Build the CSV line: field1,field2,...
+            const line_start = a.pos;
+            for (output_row, 0..) |field, i| {
+                if (i > 0) _ = try a.append(",");
+                _ = try a.append(field);
+            }
+            const line = a.data[line_start..a.pos];
+
+            try entries.append(allocator, SortEntry{
+                .numeric_key = std.fmt.parseFloat(f64, sort_key) catch std.math.nan(f64),
+                .sort_key = sort_key,
+                .line = line,
+            });
+            rows_written += 1;
+        } else {
+            // Write directly (no ORDER BY)
+            try writer.writeRecord(output_row);
+            rows_written += 1;
+
+            // Check LIMIT
+            if (query.limit >= 0 and rows_written >= query.limit) {
+                break;
+            }
+
+            // Flush periodically (less often with 1MB buffer)
+            if (@rem(rows_written, 32768) == 0) {
+                try writer.flush();
+            }
         }
+    }
 
-        // Flush periodically (less often with 1MB buffer)
-        if (@rem(rows_written, 32768) == 0) {
-            try writer.flush();
+    // Sort and write buffered rows if ORDER BY is specified
+    if (sort_entries) |*entries| {
+        if (query.order_by) |order_by| {
+            // Sort the entries
+            const Context = struct {
+                descending: bool,
+
+                pub fn lessThan(ctx: @This(), a: SortEntry, b: SortEntry) bool {
+                    const a_is_num = !std.math.isNan(a.numeric_key);
+                    const b_is_num = !std.math.isNan(b.numeric_key);
+                    if (a_is_num and b_is_num) {
+                        if (ctx.descending) return b.numeric_key < a.numeric_key else return a.numeric_key < b.numeric_key;
+                    }
+                    if (ctx.descending) return std.mem.lessThan(u8, b.sort_key, a.sort_key) else return std.mem.lessThan(u8, a.sort_key, b.sort_key);
+                }
+            };
+
+            const sort_context = Context{
+                .descending = order_by.order == .desc,
+            };
+
+            std.mem.sort(SortEntry, entries.items, sort_context, Context.lessThan);
+
+            // Write sorted rows respecting LIMIT
+            var written: i32 = 0;
+            for (entries.items) |entry| {
+                if (query.limit >= 0 and written >= query.limit) {
+                    break;
+                }
+
+                try writer.writeToBuffer(entry.line);
+                try writer.writeToBuffer("\n");
+                written += 1;
+            }
         }
     }
 

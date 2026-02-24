@@ -245,7 +245,7 @@ pub const CsvWriter = struct {
         };
     }
 
-    fn writeToBuffer(self: *CsvWriter, data: []const u8) !void {
+    pub fn writeToBuffer(self: *CsvWriter, data: []const u8) !void {
         var remaining = data;
         while (remaining.len > 0) {
             const space_left = self.buffer.len - self.buffer_pos;

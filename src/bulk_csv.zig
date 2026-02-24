@@ -12,6 +12,8 @@ pub const BulkCsvReader = struct {
     buffer_len: usize,
     eof: bool,
     line_start: usize,
+    // Pre-allocated field buffer for zero-copy reads (avoids per-field allocation)
+    field_buf: [256][]const u8 = undefined,
 
     pub fn init(allocator: Allocator, file: std.fs.File) !BulkCsvReader {
         // Allocate 2MB buffer for bulk reading - fewer syscalls
@@ -109,6 +111,57 @@ pub const BulkCsvReader = struct {
                 }
             }
         }
+    }
+
+    /// Zero-copy read - returns slices directly into the read buffer.
+    /// Returned data is only valid until the next readRecordSlices() call.
+    /// No allocations are performed (uses pre-allocated field buffer).
+    pub fn readRecordSlices(self: *BulkCsvReader) !?[]const []const u8 {
+        while (true) {
+            const search_start = self.line_start;
+            if (search_start >= self.buffer_len) {
+                try self.fillBuffer();
+                if (self.eof and self.buffer_len == 0) return null;
+                if (self.line_start >= self.buffer_len) return null;
+                continue;
+            }
+
+            const remaining = self.buffer[search_start..self.buffer_len];
+            const newline_pos = std.mem.indexOfScalar(u8, remaining, '\n');
+
+            if (newline_pos) |pos| {
+                var line_end = search_start + pos;
+                if (line_end > search_start and self.buffer[line_end - 1] == '\r') {
+                    line_end -= 1;
+                }
+                const line = self.buffer[search_start..line_end];
+                self.line_start = search_start + pos + 1;
+                return self.parseLineSlices(line);
+            } else {
+                if (self.eof) {
+                    if (self.line_start < self.buffer_len) {
+                        const line = self.buffer[self.line_start..self.buffer_len];
+                        self.line_start = self.buffer_len;
+                        return self.parseLineSlices(line);
+                    }
+                    return null;
+                }
+                try self.fillBuffer();
+                if (self.eof and self.line_start >= self.buffer_len) return null;
+            }
+        }
+    }
+
+    /// Parse a line into field_buf without any allocation
+    fn parseLineSlices(self: *BulkCsvReader, line: []const u8) []const []const u8 {
+        var count: usize = 0;
+        var iter = std.mem.splitScalar(u8, line, self.delimiter);
+        while (iter.next()) |field| {
+            if (count >= self.field_buf.len) break;
+            self.field_buf[count] = field;
+            count += 1;
+        }
+        return self.field_buf[0..count];
     }
 
     fn parseLine(self: *BulkCsvReader, line: []const u8) ![][]u8 {
