@@ -166,11 +166,13 @@ pub fn parse(allocator: Allocator, input: []const u8) !Query {
     var rest = trimmed[from_idx + 4 ..];
     const where_idx = std.ascii.indexOfIgnoreCase(rest, "WHERE");
     const group_by_idx = std.ascii.indexOfIgnoreCase(rest, "GROUP BY");
+    const order_by_idx = std.ascii.indexOfIgnoreCase(rest, "ORDER BY");
     const limit_idx = std.ascii.indexOfIgnoreCase(rest, "LIMIT");
 
     var file_end = rest.len;
     if (where_idx) |idx| file_end = @min(file_end, idx);
     if (group_by_idx) |idx| file_end = @min(file_end, idx);
+    if (order_by_idx) |idx| file_end = @min(file_end, idx);
     if (limit_idx) |idx| file_end = @min(file_end, idx);
 
     const file_part = std.mem.trim(u8, rest[0..file_end], &std.ascii.whitespace);
@@ -181,6 +183,8 @@ pub fn parse(allocator: Allocator, input: []const u8) !Query {
         var where_part = rest[idx + 5 ..];
         if (group_by_idx) |gidx| {
             where_part = where_part[0..@min(where_part.len, gidx - idx - 5)];
+        } else if (order_by_idx) |oidx| {
+            where_part = where_part[0..@min(where_part.len, oidx - idx - 5)];
         } else if (limit_idx) |lidx| {
             where_part = where_part[0..@min(where_part.len, lidx - idx - 5)];
         }
@@ -191,7 +195,9 @@ pub fn parse(allocator: Allocator, input: []const u8) !Query {
     // Parse GROUP BY clause if present
     if (group_by_idx) |idx| {
         var group_by_part = rest[idx + 8 ..];
-        if (limit_idx) |lidx| {
+        if (order_by_idx) |oidx| {
+            group_by_part = group_by_part[0..@min(group_by_part.len, oidx - idx - 8)];
+        } else if (limit_idx) |lidx| {
             group_by_part = group_by_part[0..@min(group_by_part.len, lidx - idx - 8)];
         }
         group_by_part = std.mem.trim(u8, group_by_part, &std.ascii.whitespace);
@@ -210,6 +216,41 @@ pub fn parse(allocator: Allocator, input: []const u8) !Query {
     } else {
         // FIXED: Always allocate empty slice instead of using static slice
         query.group_by = try allocator.alloc([]u8, 0);
+    }
+
+    // Parse ORDER BY clause if present
+    if (order_by_idx) |idx| {
+        var order_by_part = rest[idx + 8 ..];
+        if (limit_idx) |lidx| {
+            order_by_part = order_by_part[0..@min(order_by_part.len, lidx - idx - 8)];
+        }
+        order_by_part = std.mem.trim(u8, order_by_part, &std.ascii.whitespace);
+
+        // Parse column and direction (ASC/DESC)
+        const asc_idx = std.ascii.indexOfIgnoreCase(order_by_part, " ASC");
+        const desc_idx = std.ascii.indexOfIgnoreCase(order_by_part, " DESC");
+
+        var column_part: []const u8 = undefined;
+        var order: SortOrder = .asc; // Default to ascending
+
+        if (desc_idx) |didx| {
+            column_part = std.mem.trim(u8, order_by_part[0..didx], &std.ascii.whitespace);
+            order = .desc;
+        } else if (asc_idx) |aidx| {
+            column_part = std.mem.trim(u8, order_by_part[0..aidx], &std.ascii.whitespace);
+            order = .asc;
+        } else {
+            column_part = order_by_part;
+        }
+
+        // Lowercase the column name for case-insensitive matching
+        const column_lower = try allocator.alloc(u8, column_part.len);
+        _ = std.ascii.lowerString(column_lower, column_part);
+
+        query.order_by = OrderBy{
+            .column = column_lower,
+            .order = order,
+        };
     }
 
     // Parse LIMIT clause if present
