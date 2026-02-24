@@ -235,24 +235,72 @@ pub const TopKHeap = struct {
 /// LSD (Least Significant Digit) radix sort on u64 keys.
 /// 8 passes, one per byte, 256 buckets per pass.
 /// Sorts in ascending order; caller reverses for DESC.
-pub fn radixSortU64(allocator: Allocator, items: []SortKey) !void {
+/// Compact key+index pair for indirect radix sort (12 bytes vs 48-byte SortKey).
+/// Sorting these instead of full SortKey structs gives ~4x less data movement.
+const KeyIndex = struct {
+    key: u64,
+    idx: u32,
+};
+
+/// Indirect radix sort with pass-skipping and optional DESC support.
+/// 1. Extracts (key, index) pairs — 12 bytes each instead of 48-byte SortKey
+/// 2. Skips byte passes where all keys share the same byte value (common for
+///    integer salary data where upper bytes are identical)
+/// 3. For DESC: XOR keys before sorting to reverse order, avoiding a separate reverse pass
+/// After sorting, gathers results back into the original items array.
+pub fn radixSortU64(allocator: Allocator, items: []SortKey, descending: bool) !void {
     if (items.len <= 1) return;
 
     const n = items.len;
-    const temp = try allocator.alloc(SortKey, n);
+
+    // Build indirect key+index array (12 bytes each vs 48 bytes for full SortKey)
+    const keys = try allocator.alloc(KeyIndex, n);
+    defer allocator.free(keys);
+    const temp = try allocator.alloc(KeyIndex, n);
     defer allocator.free(temp);
 
-    var src = items;
-    var dst = temp;
+    // For DESC, XOR keys to flip sort order — ascending on flipped keys = descending on original
+    const xor_mask: u64 = if (descending) 0xFFFFFFFFFFFFFFFF else 0;
+    for (items, 0..) |entry, i| {
+        keys[i] = .{ .key = entry.radix_key ^ xor_mask, .idx = @intCast(i) };
+    }
 
-    // 8 passes for 8 bytes of u64
+    // Pre-scan: detect which byte positions actually vary across keys.
+    // Skip passes where all keys have the same byte (e.g., upper bytes of small integers).
+    var byte_varies: [8]bool = .{ false, false, false, false, false, false, false, false };
+    var active_passes: usize = 0;
+    {
+        const first_key = keys[0].key;
+        for (0..8) |byte_idx| {
+            const shift: u6 = @intCast(byte_idx * 8);
+            const ref_byte: u8 = @truncate(first_key >> shift);
+            for (keys[1..]) |ki| {
+                const b: u8 = @truncate(ki.key >> shift);
+                if (b != ref_byte) {
+                    byte_varies[byte_idx] = true;
+                    active_passes += 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    // If no bytes vary, all keys are identical — already sorted
+    if (active_passes == 0) return;
+
+    var src = keys;
+    var dst = temp;
+    var passes_done: usize = 0;
+
     for (0..8) |byte_idx| {
+        if (!byte_varies[byte_idx]) continue;
+
         const shift: u6 = @intCast(byte_idx * 8);
 
         // Count occurrences of each byte value
         var counts: [256]usize = [_]usize{0} ** 256;
-        for (src) |entry| {
-            const byte_val: u8 = @truncate(entry.radix_key >> shift);
+        for (src) |ki| {
+            const byte_val: u8 = @truncate(ki.key >> shift);
             counts[byte_val] += 1;
         }
 
@@ -265,9 +313,9 @@ pub fn radixSortU64(allocator: Allocator, items: []SortKey) !void {
         }
 
         // Scatter to destination
-        for (src) |entry| {
-            const byte_val: u8 = @truncate(entry.radix_key >> shift);
-            dst[counts[byte_val]] = entry;
+        for (src) |ki| {
+            const byte_val: u8 = @truncate(ki.key >> shift);
+            dst[counts[byte_val]] = ki;
             counts[byte_val] += 1;
         }
 
@@ -275,11 +323,17 @@ pub fn radixSortU64(allocator: Allocator, items: []SortKey) !void {
         const tmp = src;
         src = dst;
         dst = tmp;
+        passes_done += 1;
     }
 
-    // After 8 passes, result is in src. If src != items, copy back.
-    if (@intFromPtr(src.ptr) != @intFromPtr(items.ptr)) {
-        @memcpy(items, src);
+    // Gather: reorder items in-place using the sorted indices.
+    // We need a temporary copy of the original items for gathering.
+    const items_copy = try allocator.alloc(SortKey, n);
+    defer allocator.free(items_copy);
+    @memcpy(items_copy, items);
+
+    for (src, 0..) |ki, i| {
+        items[i] = items_copy[ki.idx];
     }
 }
 
@@ -321,10 +375,7 @@ pub fn sortEntries(
             return items[0..sorted.len];
         },
         .radix => {
-            try radixSortU64(allocator, items);
-            if (descending) {
-                std.mem.reverse(SortKey, items);
-            }
+            try radixSortU64(allocator, items, descending);
             if (limit) |k| {
                 return items[0..@min(k, items.len)];
             }
@@ -430,7 +481,7 @@ test "radix sort ascending" {
         makeSortKey(20, "", ""),
     };
 
-    try radixSortU64(allocator, &items);
+    try radixSortU64(allocator, &items, false);
 
     try std.testing.expectEqual(@as(f64, 10), sortableU64ToF64(items[0].radix_key));
     try std.testing.expectEqual(@as(f64, 20), sortableU64ToF64(items[1].radix_key));
@@ -449,7 +500,7 @@ test "radix sort with negative numbers" {
         makeSortKey(50, "", ""),
     };
 
-    try radixSortU64(allocator, &items);
+    try radixSortU64(allocator, &items, false);
 
     try std.testing.expectEqual(@as(f64, -100), sortableU64ToF64(items[0].radix_key));
     try std.testing.expectEqual(@as(f64, -5), sortableU64ToF64(items[1].radix_key));
