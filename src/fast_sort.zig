@@ -512,7 +512,8 @@ test "radix sort with negative numbers" {
 test "chooseStrategy selects heap for small limit" {
     try std.testing.expectEqual(SortStrategy.heap_topk, chooseStrategy(100000, 10, true));
     try std.testing.expectEqual(SortStrategy.heap_topk, chooseStrategy(100000, 100, true));
-    try std.testing.expectEqual(SortStrategy.heap_topk, chooseStrategy(100000, 2048, true));
+    // HEAP_MAX_K is arch-dependent (2048 on ARM, 1024 on x86), so test with a value that fits both
+    try std.testing.expectEqual(SortStrategy.heap_topk, chooseStrategy(100000, 512, true));
 }
 
 test "chooseStrategy selects radix for large numeric data" {
