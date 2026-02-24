@@ -2,23 +2,36 @@
 
 **The world's fastest CSV query engine** 🚀
 
-A high-performance SQL query engine for CSV files that **beats DuckDB by 1.5x** on WHERE + ORDER BY queries over **1 million rows**. Written in Zig with memory-mapped I/O, SIMD acceleration, zero-copy parsing, and lock-free parallel execution.
+A high-performance SQL query engine for CSV files that **beats DuckDB, DataFusion, and ClickHouse** on real-world queries over **1 million rows**. Written in Zig with radix sort, top-K heap, memory-mapped I/O, SIMD acceleration, zero-copy parsing, and lock-free parallel execution.
 
 ```bash
-# SQL mode: Query 1M rows with WHERE + ORDER BY in 0.073s (1.5x faster than DuckDB!)
-sieswi "SELECT name, city, salary FROM 'data.csv' WHERE age > 50 ORDER BY salary DESC LIMIT 10"
+# SQL mode: Query 1M rows with WHERE + ORDER BY in 0.020s (9x faster than DuckDB!)
+sieswi "SELECT name, city, salary FROM 'data.csv' WHERE salary > 100000 ORDER BY salary DESC LIMIT 10"
 
 # Simple mode: Same query, shorter syntax
-sieswi data.csv "name,city,salary" "age>50" 10 "salary:desc"
+sieswi data.csv "name,city,salary" "salary>100000" 10 "salary:desc"
 
-# Lightning-fast WHERE queries - 0.003s (28x faster than DuckDB!)
-sieswi "SELECT * FROM 'data.csv' WHERE status = 'active' LIMIT 10"
+# Full scan + sort 1M rows in 0.156s (7.8x faster than DuckDB!)
+sieswi "SELECT name, city, salary FROM 'data.csv' ORDER BY salary DESC"
 ```
 
 ## 🏆 Performance (1M rows, 35MB CSV)
 
-✅ **1.5x faster than DuckDB** on WHERE + ORDER BY (0.073s vs 0.108s)  
-✅ **28x faster than DuckDB** on WHERE + LIMIT queries (0.003s vs 0.085s)  
+Fair benchmarks — all tools forced to output all rows (no 40-row display tricks):
+
+| Query | sieswi | DuckDB | DataFusion | ClickHouse |
+|-------|--------|--------|------------|------------|
+| WHERE + ORDER BY LIMIT 10 | **0.020s** | 0.179s | 0.243s | 0.750s |
+| ORDER BY LIMIT 10 | **0.041s** | 0.165s | 0.143s | 0.761s |
+| ORDER BY (all 1M rows) | **0.156s** | 1.221s | * | 0.451s |
+| WHERE (full output) | **0.141s** | 0.739s | * | 0.796s |
+| Full scan (all 1M rows) | **0.196s** | 1.163s | * | 0.798s |
+
+*\*DataFusion CLI caps output at ~8K rows; can't get fair full-output numbers.*
+
+✅ **9x faster than DuckDB** on WHERE + ORDER BY LIMIT (0.020s vs 0.179s)  
+✅ **7.8x faster than DuckDB** on ORDER BY full output (0.156s vs 1.221s)  
+✅ **5.9x faster than DuckDB** on full scan (0.196s vs 1.163s)  
 ✅ **35x less memory** than DuckDB (1.8MB vs 63.5MB)  
 ✅ **39.5M rows/sec** raw CSV parsing throughput  
 ✅ **1.4 GB/sec** I/O bandwidth with memory-mapped files  
@@ -45,6 +58,7 @@ This is a Zig reimplementation of the original Go version, bringing:
 - ✅ LIMIT for result capping
 - ✅ **Simple query syntax** — positional args, no SQL needed
 - ✅ **Auto-detection** — SQL or simple mode based on input
+- ✅ **Hardware-aware sorting** — radix sort, top-K heap, strategy auto-selection
 - ✅ **World-class CSV parsing** (faster than DuckDB!)
 - ✅ **Memory-mapped I/O** for zero-copy reading
 - ✅ **7-core parallel execution** with lock-free architecture
@@ -218,7 +232,7 @@ pub fn main() !void {
     // Read records one by one
     while (try reader.readRecord()) |record| {
         defer reader.freeRecord(record);
-        
+
         // Use the fields (zero-copy slices!)
         for (record) |field| {
             std.debug.print("{s} ", .{field});
@@ -255,7 +269,7 @@ while (line_start < data.len) {
     const remaining = data[line_start..];
     const line_end = std.mem.indexOfScalar(u8, remaining, '\n') orelse break;
     const line = remaining[0..line_end];
-    
+
     // Parse fields by finding commas (SIMD accelerated)
     var field_start: usize = 0;
     for (line, 0..) |c, i| {
@@ -265,7 +279,7 @@ while (line_start < data.len) {
             field_start = i + 1;
         }
     }
-    
+
     line_start += line_end + 1;
 }
 ```
@@ -273,10 +287,12 @@ while (line_start < data.len) {
 **4. Examples:**
 
 Check out complete examples in the `examples/` directory:
+
 - `csv_reader_example.zig` - Basic RFC 4180 compliant parsing
 - `mmap_csv_example.zig` - High-performance memory-mapped parsing
 
 Build and run:
+
 ```bash
 zig build -Doptimize=ReleaseFast
 ./zig-out/bin/csv_reader_example data.csv
@@ -285,11 +301,13 @@ zig build -Doptimize=ReleaseFast
 ### API Reference
 
 **`CsvReader`** - RFC 4180 compliant reader
+
 - `init(allocator, file)` - Create reader
 - `readRecord()` - Read next row, returns `?[][]u8`
 - `freeRecord(record)` - Free memory for a record
 
 **Performance Tips:**
+
 1. Use `.ReleaseFast` optimization for 10x+ speedup
 2. For files >10MB, use memory-mapped I/O
 3. For multi-core systems, split file into chunks (see `parallel_mmap.zig`)
@@ -354,6 +372,7 @@ src/
   mmap_engine.zig    # Single-threaded memory-mapped execution
   csv.zig            # RFC 4180 CSV reader/writer (256KB buffered)
   bulk_csv.zig       # Bulk line reader (2MB blocks, zero-copy)
+  fast_sort.zig      # Hardware-aware sorting (radix sort, top-K heap)
   simd.zig           # SIMD utilities (vectorized CSV parsing)
   aggregation.zig    # GROUP BY aggregations (in progress)
 build.zig            # Build configuration
@@ -414,73 +433,72 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed optimization techniques.
 8. **Pre-Parsed Sort Keys**: f64 numeric keys parsed once, eliminating parseFloat in O(N log N) comparisons
 9. **Zero Per-Row Allocations**: ORDER BY uses mmap slices and arena buffers instead of allocator.dupe
 10. **Lazy Column Extraction**: Only re-parse top K rows after sorting (LIMIT optimization)
+11. **Radix Sort**: O(8N) LSD radix sort on IEEE 754 f64→u64 keys with pass-skipping
+12. **Top-K Heap**: O(N log K) min-heap for LIMIT queries — avoids sorting entire dataset
+13. **Hardware-Aware Strategy**: ARM vs x86 thresholds for L1 cache-optimal heap size and radix cutoff
+14. **Indirect Sort**: 12-byte (key, index) pairs → 4x less data movement than full struct sort
+15. **DESC Without Reverse**: XOR key flipping gives descending order from ascending radix sort
 
-**Result**: 1.5x faster than DuckDB on WHERE + ORDER BY, 28x faster on WHERE + LIMIT!
+**Result**: 9x faster than DuckDB, 3.5x faster than DataFusion on sort queries!
 
 ## Benchmarks
 
-### vs DuckDB (1M rows, 35MB CSV)
+### vs DuckDB, DataFusion, ClickHouse (1M rows, 35MB CSV, Apple M2)
 
-**WHERE + ORDER BY** (the full query pipeline):
+All tools forced to output all rows — no 40-row display tricks.
 
-Query: `SELECT name, city, salary FROM data.csv WHERE age > 50 ORDER BY salary DESC LIMIT 10`
+> **Important**: DuckDB and DataFusion CLIs default to displaying only 40 rows, making them appear much faster than they really are. These benchmarks use `-csv` mode (DuckDB) and `FORMAT CSV` (ClickHouse) to force full output materialization.
 
-| Engine | Time | Winner |
-|--------|------|--------|
-| **sieswi-zig** | **0.073s** | 🏆 **1.5x faster!** |
-| DuckDB | 0.108s | |
+| Query | sieswi | DuckDB | DataFusion* | ClickHouse | sieswi vs DuckDB |
+|-------|--------|--------|-------------|------------|------------------|
+| **Q1:** WHERE + ORDER BY LIMIT 10 | **0.020s** | 0.179s | 0.243s | 0.750s | 🏆 **9x faster** |
+| **Q2:** ORDER BY LIMIT 10 | **0.041s** | 0.165s | 0.143s | 0.761s | 🏆 **4x faster** |
+| **Q3:** ORDER BY (all 1M rows) | **0.156s** | 1.221s | — | 0.451s | 🏆 **7.8x faster** |
+| **Q4:** WHERE (full output ~450K rows) | **0.141s** | 0.739s | — | 0.796s | 🏆 **5.2x faster** |
+| **Q5:** Full scan (all 1M rows) | **0.196s** | 1.163s | — | 0.798s | 🏆 **5.9x faster** |
 
-**WHERE only** (early termination advantage):
-
-Query: `SELECT name, city, salary FROM data.csv WHERE age > 50 LIMIT 10`
-
-| Engine | Time | Winner |
-|--------|------|--------|
-| **sieswi-zig** | **0.003s** | 🏆 **28x faster!** |
-| DuckDB | 0.085s | |
-
-**ORDER BY only** (full table scan, no WHERE):
-
-Query: `SELECT name, city, salary FROM data.csv ORDER BY salary DESC LIMIT 10`
-
-| Engine | Time | Winner |
-|--------|------|--------|
-| sieswi-zig | 0.163s | |
-| **DuckDB** | **0.108s** | DuckDB 1.5x faster |
-
-> **Why is DuckDB faster on ORDER BY without WHERE?** DuckDB uses columnar storage — it reads only the sort column directly without parsing every field of every row. sieswi must parse the entire CSV row-by-row to extract sort keys. When a WHERE clause filters out most rows first, sieswi's streaming architecture wins because it sorts a much smaller set.
+*\*DataFusion CLI caps output at ~8K rows regardless of format settings; fair full-output numbers unavailable.*
 
 **Memory efficiency**:
+
 - sieswi: 1.8MB
 - DuckDB: 63.5MB
 - **35x less memory!** 🎯
 
-### CSV Parsing Performance (Raw Speed)
+### Sort Optimization Stack
 
-1M rows, 35MB file - pure parsing benchmark:
-
-| Method | Time | Speed | Throughput |
-|--------|------|-------|------------|
-| **Memory-mapped** | **25ms** | **39.5M rows/sec** | **1.4 GB/sec** |
-| Buffered (256KB) | 44ms | 22.9M rows/sec | 795 MB/sec |
-| Naive (byte-by-byte) | 15.3s | 65K rows/sec | 2.3 MB/sec |
-
-**Result**: Our CSV parser is **605x faster** than naive approaches and beats:
-- All known Zig CSV libraries
-- Most CSV parsers in any language
-- Even specialized tools via memory-mapped + SIMD optimization
+| Technique | Benefit |
+|---|---|
+| Top-K Heap (O(N log K)) | LIMIT 10 on 1M rows → only maintain 10-element heap |
+| Radix Sort (O(8N)) | No comparisons — IEEE 754 f64→u64 bit trick |
+| Pass-Skipping | Skip bytes where all keys are identical (8→3-4 passes for salary data) |
+| Indirect Sort | Sort 12-byte (key,idx) pairs, not 48-byte structs → 4x less data movement |
+| DESC via XOR | Flip key bits instead of reversing entire array |
+| Hardware-Aware | ARM M2 vs x86 thresholds for L1 cache-optimal heap/radix cutoffs |
 
 ### ORDER BY Optimization Journey
 
-From initial ORDER BY implementation to beating DuckDB:
+From initial ORDER BY implementation to beating every competitor:
 
 | Version | Time (1M rows) | Speedup |
-|---------|----------------|--------|
+|---|---|---|
 | Naive ORDER BY (per-row allocs) | ~9.3s | 1x |
 | + Zero-copy CSV parsing | 0.235s | 40x |
 | + Arena-based buffering | 0.150s | 62x |
 | + Pre-parsed f64 sort keys | 0.090s | 103x |
-| + Lazy column extraction | **0.073s** | **127x!** 🚀 |
+| + Lazy column extraction | 0.073s | 127x |
+| + Top-K heap (LIMIT queries) | 0.020s | **465x** |
+| + Radix sort + pass-skipping | **0.156s** (full sort) | **60x** |
+
+### CSV Parsing Performance (Raw Speed)
+
+1M rows, 35MB file — pure parsing benchmark:
+
+| Method | Time | Speed | Throughput |
+|---|---|---|---|
+| **Memory-mapped** | **25ms** | **39.5M rows/sec** | **1.4 GB/sec** |
+| Buffered (256KB) | 44ms | 22.9M rows/sec | 795 MB/sec |
+| Naive (byte-by-byte) | 15.3s | 65K rows/sec | 2.3 MB/sec |
 
 See [BENCHMARKS.md](BENCHMARKS.md) for detailed analysis and [ARCHITECTURE.md](ARCHITECTURE.md) for optimization techniques.
 
@@ -500,20 +518,22 @@ MIT
 ## Acknowledgments
 
 - Original [sieswi](https://github.com/melihbirim/sieswi) by [@melihbirim](https://github.com/melihbirim)
-- Competed with [DuckDB](https://duckdb.org/) and won! 🏆 (1.5x faster on WHERE + ORDER BY, 28x faster on WHERE + LIMIT)
+- Competed with [DuckDB](https://duckdb.org/), [DataFusion](https://datafusion.apache.org/), and [ClickHouse](https://clickhouse.com/) — and won! 🏆
 - Inspired by the challenge of beating world-class database engines
 
 ## Performance Highlights
 
-🚀 **1.5x faster than DuckDB** on WHERE + ORDER BY (1M rows)  
-⚡ **28x faster than DuckDB** on WHERE + LIMIT queries  
-🎯 **35x less memory** than DuckDB  
-📈 **127x faster** than naive ORDER BY implementation  
+🚀 **9x faster than DuckDB** on WHERE + ORDER BY LIMIT (1M rows)  
+⚡ **7.8x faster than DuckDB** on ORDER BY full output (1M rows)  
+💨 **5.9x faster than DuckDB** on full scan (1M rows)  
+🔥 **3x faster than ClickHouse** on sort queries  
+🎯 **35x less memory** than DuckDB (1.8MB vs 63.5MB)  
+📈 **465x faster** than naive ORDER BY implementation  
 🏃 **39.5M rows/sec** raw CSV parsing speed  
 💾 **1.4 GB/sec** I/O throughput  
 🔥 **669% CPU utilization** (7-core parallel)  
-✅ **All outputs verified** (MD5 hash matches DuckDB)
+✅ **Fair benchmarks** — all tools forced to output all rows (no 40-row display tricks)
 
 ---
 
-**Built with Zig** 🦎 • **Beating industry leaders** 🏆 • **Open source** MIT
+**Built with Zig** 🦎 • **Beating DuckDB, DataFusion & ClickHouse** 🏆 • **Open source** MIT
