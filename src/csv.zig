@@ -289,7 +289,7 @@ pub const CsvWriter = struct {
 
     pub fn flush(self: *CsvWriter) !void {
         if (self.buffer_pos > 0) {
-            _ = try self.file.write(self.buffer[0..self.buffer_pos]);
+            try self.file.writeAll(self.buffer[0..self.buffer_pos]);
             self.buffer_pos = 0;
         }
     }
