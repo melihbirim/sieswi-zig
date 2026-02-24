@@ -2,26 +2,29 @@
 
 **The world's fastest CSV query engine** 🚀
 
-A high-performance SQL query engine for CSV files that **beats DuckDB by 2.1x** on filtered queries. Written in Zig with memory-mapped I/O, SIMD acceleration, and lock-free parallel execution.
+A high-performance SQL query engine for CSV files that **beats DuckDB by 1.5x** on WHERE + ORDER BY queries over **1 million rows**. Written in Zig with memory-mapped I/O, SIMD acceleration, zero-copy parsing, and lock-free parallel execution.
 
 ```bash
-# Query 1M rows in 0.235 seconds (2.1x faster than DuckDB!)
-sieswi "SELECT name, city, salary FROM 'data.csv' WHERE age > 50"
+# SQL mode: Query 1M rows with WHERE + ORDER BY in 0.073s (1.5x faster than DuckDB!)
+sieswi "SELECT name, city, salary FROM 'data.csv' WHERE age > 50 ORDER BY salary DESC LIMIT 10"
 
-# Lightning-fast LIMIT queries - 0.005s (26x faster than DuckDB!)
+# Simple mode: Same query, shorter syntax
+sieswi data.csv "name,city,salary" "age>50" 10 "salary:desc"
+
+# Lightning-fast WHERE queries - 0.003s (28x faster than DuckDB!)
 sieswi "SELECT * FROM 'data.csv' WHERE status = 'active' LIMIT 10"
 ```
 
-## 🏆 Performance
+## 🏆 Performance (1M rows, 35MB CSV)
 
-✅ **2.1x faster than DuckDB** on WHERE queries (0.235s vs 0.494s)  
-✅ **26x faster than DuckDB** on LIMIT 10 queries  
+✅ **1.5x faster than DuckDB** on WHERE + ORDER BY (0.073s vs 0.108s)  
+✅ **28x faster than DuckDB** on WHERE + LIMIT queries (0.003s vs 0.085s)  
 ✅ **35x less memory** than DuckDB (1.8MB vs 63.5MB)  
 ✅ **39.5M rows/sec** raw CSV parsing throughput  
 ✅ **1.4 GB/sec** I/O bandwidth with memory-mapped files  
 ✅ **7-core parallel** execution with 669% CPU utilization
 
-See [BENCHMARKS.md](BENCHMARKS.md) for detailed analysis.
+See [BENCHMARKS.md](BENCHMARKS.md) for detailed analysis and [ARCHITECTURE.md](ARCHITECTURE.md) for optimization techniques.
 
 ## Why Zig?
 
@@ -38,7 +41,10 @@ This is a Zig reimplementation of the original Go version, bringing:
 
 - ✅ SELECT with column projection or SELECT \*
 - ✅ WHERE clause with comparisons (=, !=, >, >=, <, <=)
+- ✅ **ORDER BY** with ASC/DESC sorting (all engines)
 - ✅ LIMIT for result capping
+- ✅ **Simple query syntax** — positional args, no SQL needed
+- ✅ **Auto-detection** — SQL or simple mode based on input
 - ✅ **World-class CSV parsing** (faster than DuckDB!)
 - ✅ **Memory-mapped I/O** for zero-copy reading
 - ✅ **7-core parallel execution** with lock-free architecture
@@ -56,9 +62,7 @@ This is a Zig reimplementation of the original Go version, bringing:
 
 **Planned:**
 
-- Multi-threaded parallel execution
 - JOIN operations
-- ORDER BY
 - Advanced operators (IN, LIKE, BETWEEN, IS NULL)
 
 ## Installation
@@ -86,7 +90,28 @@ sudo cp zig-out/bin/sieswi /usr/local/bin/
 
 ## Quick Start
 
-### Basic Queries
+### Simple Syntax (Recommended)
+
+```bash
+# Show first 10 rows (default)
+sieswi data.csv
+
+# Select specific columns
+sieswi data.csv "name,age,city"
+
+# Filter rows
+sieswi data.csv "*" "age>30"
+
+# Top 10 highest salaries
+sieswi data.csv "name,salary" "salary>0" 10 "salary:desc"
+
+# All rows, no limit, sorted by name
+sieswi data.csv "*" "" 0 "name:asc"
+```
+
+See [SIMPLE_QUERY_LANGUAGE.md](SIMPLE_QUERY_LANGUAGE.md) for full syntax reference.
+
+### SQL Syntax
 
 ```bash
 # Select all columns
@@ -97,6 +122,9 @@ sieswi "SELECT name, age FROM 'users.csv'"
 
 # Filter with WHERE clause
 sieswi "SELECT * FROM 'sales.csv' WHERE amount > 100"
+
+# Filter, sort, and limit
+sieswi "SELECT name, salary FROM 'data.csv' WHERE age > 30 ORDER BY salary DESC LIMIT 10"
 
 # Combine filtering and projection
 sieswi "SELECT name, email FROM 'users.csv' WHERE age >= 18 LIMIT 100"
@@ -132,6 +160,7 @@ sieswi "SELECT email FROM 'users.csv'" | wc -l
 - **SELECT**: Column projection (`SELECT col1, col2`) or all columns (`SELECT *`)
 - **FROM**: File path (quoted or unquoted), or `-` for stdin
 - **WHERE**: Comparison operators: `=`, `!=`, `>`, `>=`, `<`, `<=`
+- **ORDER BY**: Sort by any column, ASC or DESC
 - **LIMIT**: Limit number of results
 - **Numeric coercion**: Automatic string-to-number conversion in comparisons
 
@@ -139,7 +168,6 @@ sieswi "SELECT email FROM 'users.csv'" | wc -l
 
 - Boolean expressions (AND, OR, NOT) in WHERE
 - GROUP BY with aggregations
-- ORDER BY
 - JOIN operations
 - Advanced operators (IN, LIKE, BETWEEN, IS NULL)
 - HAVING clause
@@ -276,6 +304,7 @@ zig build -Doptimize=ReleaseFast
 - **SELECT**: Column projection (`SELECT col1, col2`) or all columns (`SELECT *`)
 - **FROM**: File path (quoted or unquoted), or `-` for stdin
 - **WHERE**: Comparison operators: `=`, `!=`, `>`, `>=`, `<`, `<=`
+- **ORDER BY**: Sort by any column, ASC or DESC
 - **LIMIT**: Limit number of results
 - **Numeric coercion**: Automatic string-to-number conversion in comparisons
 
@@ -283,7 +312,6 @@ zig build -Doptimize=ReleaseFast
 
 - Boolean expressions (AND, OR, NOT) in WHERE
 - GROUP BY with aggregations
-- ORDER BY
 - JOIN operations
 - Advanced operators (IN, LIKE, BETWEEN, IS NULL)
 - HAVING clause
@@ -318,59 +346,61 @@ zig build run -- "SELECT * FROM 'test.csv' LIMIT 5"
 
 ```bash
 src/
-  main.zig           # CLI entry point
-  parser.zig         # SQL query parser
-  engine.zig         # Query execution orchestrator
+  main.zig           # CLI entry point + auto-detection (SQL vs simple mode)
+  parser.zig         # SQL query parser (SELECT, WHERE, ORDER BY, LIMIT)
+  simple_parser.zig  # Simple positional argument parser
+  engine.zig         # Query execution orchestrator + sequential engine
   parallel_mmap.zig  # Lock-free parallel CSV engine (our champion!)
   mmap_engine.zig    # Single-threaded memory-mapped execution
   csv.zig            # RFC 4180 CSV reader/writer (256KB buffered)
-  bulk_csv.zig       # Bulk line reader (2MB blocks)
+  bulk_csv.zig       # Bulk line reader (2MB blocks, zero-copy)
   simd.zig           # SIMD utilities (vectorized CSV parsing)
   aggregation.zig    # GROUP BY aggregations (in progress)
 build.zig            # Build configuration
+tests/
+  parser_test.zig    # SQL parser tests
+  engine_test.zig    # Engine integration tests
+  simple_parser_test.zig  # Simple parser tests
 bench/
   csv_parse_bench.zig  # CSV parsing benchmarks
 examples/
   csv_reader_example.zig  # How to use CSV parser
   mmap_csv_example.zig    # High-performance mmap usage
+ARCHITECTURE.md      # Engine architecture & optimization details
+SIMPLE_QUERY_LANGUAGE.md  # Simple query syntax reference
 BENCHMARKS.md        # Detailed performance analysis
 ```
 
 ## Architecture
 
 ```
-Input CSV → Parse SQL → Check File Size
-                              ↓
-          ┌───────────────────┼────────────────────┐
-          │                   │                    │
-    < 5MB file          5-10MB file          > 10MB file
-          │                   │                    │
-          ↓                   ↓                    ↓
-   Sequential          Memory-Mapped        Parallel Memory-Mapped
-   (streaming)         (single thread)       (7-core lock-free)
-          │                   │                    │
-          │                   │                    ↓
-          │                   │            Split into chunks
-          │                   │            (align to \n)
-          │                   │                    ↓
-          │                   │            Thread-local arenas
-          │                   │            SIMD field parsing
-          │                   │            Direct column indexing
-          │                   │                    ↓
-          │                   │            Merge results (lock-free)
-          │                   │                    │
-          └───────────────────┴────────────────────┘
-                              ↓
-                    Filter (WHERE) - Direct indexing
-                    No HashMap on hot path!
-                              ↓
-                    Project (SELECT) - Zero-copy
-                    Build output rows directly
-                              ↓
-                    Write CSV (1MB buffer)
-                              ↓
-                         Output
+Input CSV → Auto-detect mode (SQL vs Simple) → Parse Query → Check File Size
+                                                                    ↓
+                            ┌───────────────────┼────────────────────┐
+                            │                   │                    │
+                      < 5MB file          5-10MB file          > 10MB file
+                            │                   │                    │
+                            ↓                   ↓                    ↓
+                     Sequential          Memory-Mapped        Parallel Memory-Mapped
+                     (streaming)         (single thread)       (7-core lock-free)
+                            │                   │                    │
+                            └───────────────────┴────────────────────┘
+                                                ↓
+                                  Filter (WHERE) - Direct column indexing
+                                  No HashMap on hot path!
+                                                ↓
+                                  Sort (ORDER BY) - Pre-parsed numeric keys
+                                  Zero-copy slices, arena-based buffering
+                                                ↓
+                                  Project (SELECT) - Zero-copy
+                                  Only re-parse top K rows (LIMIT)
+                                                ↓
+                                  Write CSV (1MB buffer)
+                                                ↓
+                                           Output
 ```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed optimization techniques.
 
 ### Performance Strategy
 
@@ -381,23 +411,44 @@ Input CSV → Parse SQL → Check File Size
 5. **Direct Column Indexing**: WHERE evaluation without HashMap overhead
 6. **Zero-Copy Output**: Parse once, output directly (no double-parse!)
 7. **Arena Allocation**: Bulk allocations per thread, cleared after chunk
+8. **Pre-Parsed Sort Keys**: f64 numeric keys parsed once, eliminating parseFloat in O(N log N) comparisons
+9. **Zero Per-Row Allocations**: ORDER BY uses mmap slices and arena buffers instead of allocator.dupe
+10. **Lazy Column Extraction**: Only re-parse top K rows after sorting (LIMIT optimization)
 
-**Result**: 2.1x faster than DuckDB, 108x faster than baseline!
+**Result**: 1.5x faster than DuckDB on WHERE + ORDER BY, 28x faster on WHERE + LIMIT!
 
 ## Benchmarks
 
 ### vs DuckDB (1M rows, 35MB CSV)
 
-Query: `SELECT name, city, salary FROM data.csv WHERE age > 50` (341K matching rows)
+**WHERE + ORDER BY** (the full query pipeline):
 
-| Engine | Time | CPU | Winner |
-|--------|------|-----|--------|
-| **sieswi-zig** | **0.235s** | 669% (7 cores) | 🏆 **2.1x faster!** |
-| DuckDB | 0.494s | 135% | |
+Query: `SELECT name, city, salary FROM data.csv WHERE age > 50 ORDER BY salary DESC LIMIT 10`
 
-**LIMIT queries** (early termination advantage):
-- `LIMIT 10`: sieswi **0.005s** vs DuckDB 0.133s → **26x faster** ⚡
-- `LIMIT 1000`: sieswi **0.028s** vs DuckDB 0.069s → **2.5x faster** ⚡
+| Engine | Time | Winner |
+|--------|------|--------|
+| **sieswi-zig** | **0.073s** | 🏆 **1.5x faster!** |
+| DuckDB | 0.108s | |
+
+**WHERE only** (early termination advantage):
+
+Query: `SELECT name, city, salary FROM data.csv WHERE age > 50 LIMIT 10`
+
+| Engine | Time | Winner |
+|--------|------|--------|
+| **sieswi-zig** | **0.003s** | 🏆 **28x faster!** |
+| DuckDB | 0.085s | |
+
+**ORDER BY only** (full table scan, no WHERE):
+
+Query: `SELECT name, city, salary FROM data.csv ORDER BY salary DESC LIMIT 10`
+
+| Engine | Time | Winner |
+|--------|------|--------|
+| sieswi-zig | 0.163s | |
+| **DuckDB** | **0.108s** | DuckDB 1.5x faster |
+
+> **Why is DuckDB faster on ORDER BY without WHERE?** DuckDB uses columnar storage — it reads only the sort column directly without parsing every field of every row. sieswi must parse the entire CSV row-by-row to extract sort keys. When a WHERE clause filters out most rows first, sieswi's streaming architecture wins because it sorts a much smaller set.
 
 **Memory efficiency**:
 - sieswi: 1.8MB
@@ -419,19 +470,19 @@ Query: `SELECT name, city, salary FROM data.csv WHERE age > 50` (341K matching r
 - Most CSV parsers in any language
 - Even specialized tools via memory-mapped + SIMD optimization
 
-### Full Performance Journey
+### ORDER BY Optimization Journey
 
-From initial baseline to beating DuckDB:
+From initial ORDER BY implementation to beating DuckDB:
 
-| Version | Time | Speedup vs Baseline |
-|---------|------|---------------------|
-| Baseline (sequential) | 25.38s | 1x |
-| + Buffer optimization | 18.2s | 1.4x |
-| + Memory-mapped I/O | 9.8s | 2.6x |
-| + Parallel execution | 3.1s | 8.2x |
-| + Zero-copy + SIMD | **0.235s** | **108x!** 🚀 |
+| Version | Time (1M rows) | Speedup |
+|---------|----------------|--------|
+| Naive ORDER BY (per-row allocs) | ~9.3s | 1x |
+| + Zero-copy CSV parsing | 0.235s | 40x |
+| + Arena-based buffering | 0.150s | 62x |
+| + Pre-parsed f64 sort keys | 0.090s | 103x |
+| + Lazy column extraction | **0.073s** | **127x!** 🚀 |
 
-See [BENCHMARKS.md](BENCHMARKS.md) for detailed analysis.
+See [BENCHMARKS.md](BENCHMARKS.md) for detailed analysis and [ARCHITECTURE.md](ARCHITECTURE.md) for optimization techniques.
 
 ## Contributing
 
@@ -449,15 +500,15 @@ MIT
 ## Acknowledgments
 
 - Original [sieswi](https://github.com/melihbirim/sieswi) by [@melihbirim](https://github.com/melihbirim)
-- Competed with [DuckDB](https://duckdb.org/) and won! 🏆 (2.1x faster on CSV WHERE queries)
+- Competed with [DuckDB](https://duckdb.org/) and won! 🏆 (1.5x faster on WHERE + ORDER BY, 28x faster on WHERE + LIMIT)
 - Inspired by the challenge of beating world-class database engines
 
 ## Performance Highlights
 
-🚀 **2.1x faster than DuckDB** on full table scans  
-⚡ **26x faster than DuckDB** on LIMIT queries  
+🚀 **1.5x faster than DuckDB** on WHERE + ORDER BY (1M rows)  
+⚡ **28x faster than DuckDB** on WHERE + LIMIT queries  
 🎯 **35x less memory** than DuckDB  
-📈 **108x faster** than baseline implementation  
+📈 **127x faster** than naive ORDER BY implementation  
 🏃 **39.5M rows/sec** raw CSV parsing speed  
 💾 **1.4 GB/sec** I/O throughput  
 🔥 **669% CPU utilization** (7-core parallel)  
