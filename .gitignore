@@ -24,3 +24,5 @@ sieswi
 *.dll
 *.so
 *.dylib
+
+ARCHITECTURE.md

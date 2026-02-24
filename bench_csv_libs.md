@@ -1,6 +1,6 @@
 # Zig CSV Libraries Landscape
 
-## Known Libraries:
+## Known Libraries
 
 1. **zig-csv** (github.com/beachglasslabs/zig-csv)
    - Pure Zig RFC 4180 compliant
