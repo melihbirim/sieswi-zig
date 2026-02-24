@@ -35,11 +35,11 @@ test "Query deinit with columns and GROUP BY" {
 // TDD Test 4: WHERE with mixed case column should match header (case-insensitive)
 test "WHERE clause is case-insensitive for column names" {
     const allocator = std.testing.allocator;
-    
+
     // Query uses lowercase 'name', but CSV header might be 'Name' or 'NAME'
     var query = try parser.parse(allocator, "SELECT * FROM 'test.csv' WHERE name = 'Alice'");
     defer query.deinit();
-    
+
     try std.testing.expect(query.where_expr != null);
     if (query.where_expr) |expr| {
         switch (expr) {
@@ -55,12 +55,12 @@ test "WHERE clause is case-insensitive for column names" {
 // TDD Test 5: Performance - WHERE evaluation should use direct index lookup
 test "WHERE evaluation uses precomputed column index" {
     const allocator = std.testing.allocator;
-    
+
     // This test just verifies the API exists for fast WHERE evaluation
     // The actual performance benefit is measured in benchmarks, not unit tests
     var query = try parser.parse(allocator, "SELECT * FROM 'test.csv' WHERE age > 30");
     defer query.deinit();
-    
+
     // Verify we have a WHERE clause with a simple comparison
     try std.testing.expect(query.where_expr != null);
     if (query.where_expr) |expr| {
@@ -79,21 +79,21 @@ test "WHERE evaluation uses precomputed column index" {
 // TDD Test 7: WHERE with mixed case column names
 test "WHERE with mixed case column" {
     const allocator = std.testing.allocator;
-    
+
     // Create test CSV with uppercase column name
     const tmp_file = try std.fs.cwd().createFile("test_mixed_case.csv", .{ .read = true, .truncate = true });
     defer {
         tmp_file.close();
         std.fs.cwd().deleteFile("test_mixed_case.csv") catch {};
     }
-    
+
     try tmp_file.writeAll("Name,Age\nAlice,30\nBob,25\n");
     try tmp_file.seekTo(0);
-    
+
     // Query uses lowercase 'age' but CSV has 'Age'
     var query = try parser.parse(allocator, "SELECT * FROM 'test_mixed_case.csv' WHERE age > 25");
     defer query.deinit();
-    
+
     // Verify the query parses correctly with normalized column name
     try std.testing.expectEqualStrings("age", query.where_expr.?.comparison.column);
 }

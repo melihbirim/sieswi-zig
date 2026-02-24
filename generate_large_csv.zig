@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub fn main() !void {
     const stdout = std.fs.File{ .handle = std.posix.STDOUT_FILENO };
-    
+
     // Write header
     try stdout.writeAll("id,name,age,city,salary,department\n");
 
@@ -26,13 +26,13 @@ pub fn main() !void {
 
         // Format into stack buffer (no allocation!)
         const line = try std.fmt.bufPrint(&line_buffer, "{d},{s},{d},{s},{d},{s}\n", .{ i, name, age, city, salary, dept });
-        
+
         try stdout.writeAll(line);
 
         if (@rem(i, 50000) == 0) {
             std.debug.print("Generated {d} rows...\r", .{i});
         }
     }
-    
+
     std.debug.print("\nDone! Generated 1,000,000 rows\n", .{});
 }

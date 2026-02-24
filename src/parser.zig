@@ -243,7 +243,7 @@ fn parseComparison(allocator: Allocator, input: []const u8, op_str: []const u8, 
 
     return Expression{
         .comparison = Comparison{
-            .column = column_lower,  // Use lowercased version
+            .column = column_lower, // Use lowercased version
             .operator = operator,
             .value = try allocator.dupe(u8, value_clean),
             .numeric_value = numeric_value,

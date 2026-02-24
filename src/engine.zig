@@ -140,15 +140,15 @@ fn executeSequential(
         if (query.where_expr) |expr| {
             if (expr == .comparison) {
                 const comp = expr.comparison;
-                
+
                 // Use precomputed column index for direct access
                 if (where_column_idx) |col_idx| {
                     if (col_idx < record.len) {
                         const field_value = record[col_idx];
-                        
+
                         // Fast evaluation without HashMap
                         var matches = false;
-                        
+
                         if (comp.numeric_value) |threshold| {
                             // Numeric comparison
                             const val = std.fmt.parseFloat(f64, field_value) catch {
@@ -170,7 +170,7 @@ fn executeSequential(
                                 else => false, // String doesn't support < > comparisons
                             };
                         }
-                        
+
                         if (!matches) continue;
                     } else {
                         continue; // Column doesn't exist in this row
@@ -308,15 +308,15 @@ fn executeFromStdin(
         if (query.where_expr) |expr| {
             if (expr == .comparison) {
                 const comp = expr.comparison;
-                
+
                 // Use precomputed column index for direct access
                 if (where_column_idx_stdin) |col_idx| {
                     if (col_idx < record.len) {
                         const field_value = record[col_idx];
-                        
+
                         // Fast evaluation without HashMap
                         var matches = false;
-                        
+
                         if (comp.numeric_value) |threshold| {
                             // Numeric comparison
                             const val = std.fmt.parseFloat(f64, field_value) catch {
@@ -338,7 +338,7 @@ fn executeFromStdin(
                                 else => false, // String doesn't support < > comparisons
                             };
                         }
-                        
+
                         if (!matches) continue;
                     } else {
                         continue; // Column doesn't exist in this row
