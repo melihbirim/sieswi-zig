@@ -3,6 +3,46 @@ const parser = @import("parser.zig");
 const csv = @import("csv.zig");
 const Allocator = std.mem.Allocator;
 
+/// Sort entry for ORDER BY — zero-copy slices into mmap data
+const MmapSortEntry = struct {
+    numeric_key: f64, // pre-parsed numeric value (NaN if not numeric)
+    sort_key: []const u8, // slice into mmap data
+    line: []const u8, // pre-built CSV line in arena
+};
+
+/// Arena buffer for building CSV lines
+const ArenaBuffer = struct {
+    data: []u8,
+    pos: usize,
+    allocator: Allocator,
+
+    pub fn init(alloc: Allocator, initial_size: usize) !ArenaBuffer {
+        return ArenaBuffer{
+            .data = try alloc.alloc(u8, initial_size),
+            .pos = 0,
+            .allocator = alloc,
+        };
+    }
+
+    pub fn deinit(self: *ArenaBuffer) void {
+        self.allocator.free(self.data);
+    }
+
+    pub fn append(self: *ArenaBuffer, bytes: []const u8) ![]const u8 {
+        if (self.pos + bytes.len > self.data.len) {
+            const new_size = @max(self.data.len * 2, self.pos + bytes.len);
+            const new_data = try self.allocator.alloc(u8, new_size);
+            @memcpy(new_data[0..self.pos], self.data[0..self.pos]);
+            self.allocator.free(self.data);
+            self.data = new_data;
+        }
+        const start = self.pos;
+        @memcpy(self.data[start .. start + bytes.len], bytes);
+        self.pos += bytes.len;
+        return self.data[start .. start + bytes.len];
+    }
+};
+
 /// Memory-mapped parallel CSV processing
 pub fn executeMapped(
     allocator: Allocator,
@@ -85,6 +125,49 @@ pub fn executeMapped(
     }
     try writer.writeRecord(output_header.items);
 
+    // OPTIMIZATION: Find WHERE column index for fast lookup
+    var where_column_idx: ?usize = null;
+    if (query.where_expr) |expr| {
+        if (expr == .comparison) {
+            const comp = expr.comparison;
+            for (lower_header, 0..) |lower_name, idx| {
+                if (std.mem.eql(u8, lower_name, comp.column)) {
+                    where_column_idx = idx;
+                    break;
+                }
+            }
+        }
+    }
+
+    // ORDER BY support
+    var sort_entries: ?std.ArrayList(MmapSortEntry) = null;
+    var arena: ?ArenaBuffer = null;
+    var order_by_col_idx: ?usize = null;
+    defer {
+        if (sort_entries) |*entries| entries.deinit(allocator);
+        if (arena) |*a| a.deinit();
+    }
+
+    if (query.order_by) |order_by| {
+        sort_entries = std.ArrayList(MmapSortEntry){};
+        arena = try ArenaBuffer.init(allocator, 4 * 1024 * 1024); // 4MB initial for larger files
+        for (output_indices.items, 0..) |out_idx, pos| {
+            if (out_idx < lower_header.len) {
+                if (std.mem.eql(u8, lower_header[out_idx], order_by.column)) {
+                    order_by_col_idx = pos;
+                    break;
+                }
+            }
+        }
+        if (order_by_col_idx == null) {
+            return error.OrderByColumnNotFound;
+        }
+    }
+
+    // Pre-allocate output row buffer (reused across all rows)
+    var output_row = try allocator.alloc([]const u8, output_indices.items.len);
+    defer allocator.free(output_row);
+
     // Process data starting after header
     const data_start = header_end + 1;
     var rows_written: i32 = 0;
@@ -102,54 +185,135 @@ pub fn executeMapped(
         }
 
         if (line.len > 0) {
-            // Parse fields
-            var fields = std.ArrayList([]const u8){};
-            defer fields.deinit(allocator);
-
+            // Parse fields as slices into mmap data (zero-copy)
+            var field_buf: [256][]const u8 = undefined;
+            var field_count: usize = 0;
             var field_iter = std.mem.splitScalar(u8, line, ',');
             while (field_iter.next()) |field| {
-                try fields.append(allocator, field);
+                if (field_count >= field_buf.len) break;
+                field_buf[field_count] = field;
+                field_count += 1;
             }
+            const fields = field_buf[0..field_count];
 
-            // Evaluate WHERE clause
+            // Fast WHERE evaluation
             if (query.where_expr) |expr| {
-                var row_map = std.StringHashMap([]const u8).init(allocator);
-                defer row_map.deinit();
-
-                for (lower_header, 0..) |lower_name, idx| {
-                    if (idx < fields.items.len) {
-                        try row_map.put(lower_name, fields.items[idx]);
+                if (expr == .comparison) {
+                    const comp = expr.comparison;
+                    if (where_column_idx) |col_idx| {
+                        if (col_idx < fields.len) {
+                            const field_value = fields[col_idx];
+                            var matches = false;
+                            if (comp.numeric_value) |threshold| {
+                                const val = std.fmt.parseFloat(f64, field_value) catch {
+                                    line_start += line_end + 1;
+                                    continue;
+                                };
+                                matches = switch (comp.operator) {
+                                    .equal => val == threshold,
+                                    .not_equal => val != threshold,
+                                    .greater => val > threshold,
+                                    .greater_equal => val >= threshold,
+                                    .less => val < threshold,
+                                    .less_equal => val <= threshold,
+                                };
+                            } else {
+                                matches = switch (comp.operator) {
+                                    .equal => std.mem.eql(u8, field_value, comp.value),
+                                    .not_equal => !std.mem.eql(u8, field_value, comp.value),
+                                    else => false,
+                                };
+                            }
+                            if (!matches) {
+                                line_start += line_end + 1;
+                                continue;
+                            }
+                        } else {
+                            line_start += line_end + 1;
+                            continue;
+                        }
+                    } else {
+                        line_start += line_end + 1;
+                        continue;
+                    }
+                } else {
+                    // Complex WHERE — use HashMap fallback
+                    var row_map = std.StringHashMap([]const u8).init(allocator);
+                    defer row_map.deinit();
+                    for (lower_header, 0..) |lower_name, idx| {
+                        if (idx < fields.len) {
+                            try row_map.put(lower_name, fields[idx]);
+                        }
+                    }
+                    if (!parser.evaluate(expr, row_map)) {
+                        line_start += line_end + 1;
+                        continue;
                     }
                 }
-
-                if (!parser.evaluate(expr, row_map)) {
-                    line_start += line_end + 1;
-                    continue;
-                }
             }
 
-            // Project output columns
-            var output_row = try allocator.alloc([]const u8, output_indices.items.len);
-            defer allocator.free(output_row);
-
+            // Project output columns (reuse pre-allocated output_row)
             for (output_indices.items, 0..) |idx, i| {
-                output_row[i] = if (idx < fields.items.len) fields.items[idx] else "";
+                output_row[i] = if (idx < fields.len) fields[idx] else "";
             }
 
-            try writer.writeRecord(output_row);
-            rows_written += 1;
+            if (sort_entries) |*entries| {
+                // Buffer for ORDER BY: store sort key + CSV line in arena
+                const a = &(arena.?);
+                const sort_key = try a.append(output_row[order_by_col_idx.?]);
+                const numeric_key = std.fmt.parseFloat(f64, sort_key) catch std.math.nan(f64);
+                const line_buf_start = a.pos;
+                for (output_row, 0..) |field, i| {
+                    if (i > 0) _ = try a.append(",");
+                    _ = try a.append(field);
+                }
+                const csv_line = a.data[line_buf_start..a.pos];
+                try entries.append(allocator, MmapSortEntry{
+                    .numeric_key = numeric_key,
+                    .sort_key = sort_key,
+                    .line = csv_line,
+                });
+                rows_written += 1;
+            } else {
+                try writer.writeRecord(output_row);
+                rows_written += 1;
 
-            if (query.limit >= 0 and rows_written >= query.limit) {
-                break;
-            }
-
-            // Flush periodically
-            if (@rem(rows_written, 32768) == 0) {
-                try writer.flush();
+                if (query.limit >= 0 and rows_written >= query.limit) {
+                    break;
+                }
+                if (@rem(rows_written, 32768) == 0) {
+                    try writer.flush();
+                }
             }
         }
 
         line_start += line_end + 1;
+    }
+
+    // Sort and write buffered rows if ORDER BY
+    if (sort_entries) |*entries| {
+        if (query.order_by) |order_by| {
+            const Context = struct {
+                descending: bool,
+                pub fn lessThan(ctx: @This(), a: MmapSortEntry, b: MmapSortEntry) bool {
+                    const a_is_num = !std.math.isNan(a.numeric_key);
+                    const b_is_num = !std.math.isNan(b.numeric_key);
+                    if (a_is_num and b_is_num) {
+                        if (ctx.descending) return b.numeric_key < a.numeric_key else return a.numeric_key < b.numeric_key;
+                    }
+                    if (ctx.descending) return std.mem.lessThan(u8, b.sort_key, a.sort_key) else return std.mem.lessThan(u8, a.sort_key, b.sort_key);
+                }
+            };
+            std.mem.sort(MmapSortEntry, entries.items, Context{ .descending = order_by.order == .desc }, Context.lessThan);
+
+            var written: i32 = 0;
+            for (entries.items) |entry| {
+                if (query.limit >= 0 and written >= query.limit) break;
+                try writer.writeToBuffer(entry.line);
+                try writer.writeToBuffer("\n");
+                written += 1;
+            }
+        }
     }
 
     try writer.flush();

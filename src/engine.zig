@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 
 /// Result row for ORDER BY buffering — stores sort key + CSV line
 const SortEntry = struct {
+    numeric_key: f64, // pre-parsed numeric value (NaN if not numeric)
     sort_key: []const u8, // slice into arena for the sort column value
     line: []const u8, // slice into arena for the full CSV output line
 };
@@ -69,8 +70,8 @@ pub fn execute(allocator: Allocator, query: parser.Query, output_file: std.fs.Fi
     // Check file size for processing strategy
     const file_stat = try file.stat();
 
-    // Use parallel memory-mapped I/O for large files (2+ cores, no LIMIT)
-    if (file_stat.size > 10 * 1024 * 1024 and (query.limit < 0 or query.limit > 100000)) {
+    // Use parallel memory-mapped I/O for large files (2+ cores, no LIMIT unless ORDER BY)
+    if (file_stat.size > 10 * 1024 * 1024 and (query.limit < 0 or query.limit > 100000 or query.order_by != null)) {
         const num_cores = try std.Thread.getCpuCount();
         if (num_cores > 1) {
             try parallel_mmap.executeParallelMapped(allocator, query, file, output_file);
@@ -295,6 +296,7 @@ fn executeSequential(
             const line = a.data[line_start..a.pos];
 
             try entries.append(allocator, SortEntry{
+                .numeric_key = std.fmt.parseFloat(f64, sort_key) catch std.math.nan(f64),
                 .sort_key = sort_key,
                 .line = line,
             });
@@ -324,24 +326,12 @@ fn executeSequential(
                 descending: bool,
 
                 pub fn lessThan(ctx: @This(), a: SortEntry, b: SortEntry) bool {
-                    // Try numeric comparison first
-                    const a_num = std.fmt.parseFloat(f64, a.sort_key) catch null;
-                    const b_num = std.fmt.parseFloat(f64, b.sort_key) catch null;
-
-                    if (a_num != null and b_num != null) {
-                        if (ctx.descending) {
-                            return b_num.? < a_num.?;
-                        } else {
-                            return a_num.? < b_num.?;
-                        }
+                    const a_is_num = !std.math.isNan(a.numeric_key);
+                    const b_is_num = !std.math.isNan(b.numeric_key);
+                    if (a_is_num and b_is_num) {
+                        if (ctx.descending) return b.numeric_key < a.numeric_key else return a.numeric_key < b.numeric_key;
                     }
-
-                    // Fall back to lexicographic
-                    if (ctx.descending) {
-                        return std.mem.lessThan(u8, b.sort_key, a.sort_key);
-                    } else {
-                        return std.mem.lessThan(u8, a.sort_key, b.sort_key);
-                    }
+                    if (ctx.descending) return std.mem.lessThan(u8, b.sort_key, a.sort_key) else return std.mem.lessThan(u8, a.sort_key, b.sort_key);
                 }
             };
 
