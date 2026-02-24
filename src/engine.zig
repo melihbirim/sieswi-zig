@@ -113,6 +113,21 @@ fn executeSequential(
     // Write output header
     try writer.writeRecord(output_header.items);
 
+    // OPTIMIZATION: Find WHERE column index for fast lookup (avoid HashMap in hot path)
+    var where_column_idx: ?usize = null;
+    if (query.where_expr) |expr| {
+        if (expr == .comparison) {
+            const comp = expr.comparison;
+            // Find the column index using lowercase header
+            for (lower_header, 0..) |lower_name, idx| {
+                if (std.mem.eql(u8, lower_name, comp.column)) {
+                    where_column_idx = idx;
+                    break;
+                }
+            }
+        }
+    }
+
     // Process rows
     var row_count: i32 = 0;
     var rows_written: i32 = 0;
@@ -121,20 +136,64 @@ fn executeSequential(
         defer reader.freeRecord(record);
         row_count += 1;
 
-        // Evaluate WHERE clause if present
-        if (query.where_expr != null) {
-            var row_map = std.StringHashMap([]const u8).init(allocator);
-            defer row_map.deinit();
-
-            // Build row map using pre-computed lowercase column names
-            for (lower_header, 0..) |lower_name, idx| {
-                if (idx < record.len) {
-                    try row_map.put(lower_name, record[idx]);
+        // OPTIMIZATION: Fast WHERE evaluation using direct index lookup
+        if (query.where_expr) |expr| {
+            if (expr == .comparison) {
+                const comp = expr.comparison;
+                
+                // Use precomputed column index for direct access
+                if (where_column_idx) |col_idx| {
+                    if (col_idx < record.len) {
+                        const field_value = record[col_idx];
+                        
+                        // Fast evaluation without HashMap
+                        var matches = false;
+                        
+                        if (comp.numeric_value) |threshold| {
+                            // Numeric comparison
+                            const val = std.fmt.parseFloat(f64, field_value) catch {
+                                continue; // Skip invalid rows
+                            };
+                            matches = switch (comp.operator) {
+                                .equal => val == threshold,
+                                .not_equal => val != threshold,
+                                .greater => val > threshold,
+                                .greater_equal => val >= threshold,
+                                .less => val < threshold,
+                                .less_equal => val <= threshold,
+                            };
+                        } else {
+                            // String comparison
+                            matches = switch (comp.operator) {
+                                .equal => std.mem.eql(u8, field_value, comp.value),
+                                .not_equal => !std.mem.eql(u8, field_value, comp.value),
+                                else => false, // String doesn't support < > comparisons
+                            };
+                        }
+                        
+                        if (!matches) continue;
+                    } else {
+                        continue; // Column doesn't exist in this row
+                    }
+                } else {
+                    // Column not found in header, skip all rows
+                    continue;
                 }
-            }
+            } else {
+                // Complex expressions (AND/OR/NOT) still use HashMap
+                // TODO: Optimize these as well
+                var row_map = std.StringHashMap([]const u8).init(allocator);
+                defer row_map.deinit();
 
-            if (!parser.evaluate(query.where_expr.?, row_map)) {
-                continue;
+                for (lower_header, 0..) |lower_name, idx| {
+                    if (idx < record.len) {
+                        try row_map.put(lower_name, record[idx]);
+                    }
+                }
+
+                if (!parser.evaluate(expr, row_map)) {
+                    continue;
+                }
             }
         }
 
@@ -224,26 +283,85 @@ fn executeFromStdin(
     // Write output header
     try writer.writeRecord(output_header.items);
 
+    // OPTIMIZATION: Find WHERE column index for fast lookup (avoid HashMap in hot path)
+    var where_column_idx_stdin: ?usize = null;
+    if (query.where_expr) |expr| {
+        if (expr == .comparison) {
+            const comp = expr.comparison;
+            // Find the column index using lowercase header
+            for (lower_header, 0..) |lower_name, idx| {
+                if (std.mem.eql(u8, lower_name, comp.column)) {
+                    where_column_idx_stdin = idx;
+                    break;
+                }
+            }
+        }
+    }
+
     // Process rows
     var rows_written: i32 = 0;
 
     while (try reader.readRecord()) |record| {
         defer reader.freeRecord(record);
 
-        // Evaluate WHERE clause if present
-        if (query.where_expr != null) {
-            var row_map = std.StringHashMap([]const u8).init(allocator);
-            defer row_map.deinit();
-
-            // Build row map using pre-computed lowercase column names
-            for (lower_header, 0..) |lower_name, idx| {
-                if (idx < record.len) {
-                    try row_map.put(lower_name, record[idx]);
+        // OPTIMIZATION: Fast WHERE evaluation using direct index lookup
+        if (query.where_expr) |expr| {
+            if (expr == .comparison) {
+                const comp = expr.comparison;
+                
+                // Use precomputed column index for direct access
+                if (where_column_idx_stdin) |col_idx| {
+                    if (col_idx < record.len) {
+                        const field_value = record[col_idx];
+                        
+                        // Fast evaluation without HashMap
+                        var matches = false;
+                        
+                        if (comp.numeric_value) |threshold| {
+                            // Numeric comparison
+                            const val = std.fmt.parseFloat(f64, field_value) catch {
+                                continue; // Skip invalid rows
+                            };
+                            matches = switch (comp.operator) {
+                                .equal => val == threshold,
+                                .not_equal => val != threshold,
+                                .greater => val > threshold,
+                                .greater_equal => val >= threshold,
+                                .less => val < threshold,
+                                .less_equal => val <= threshold,
+                            };
+                        } else {
+                            // String comparison
+                            matches = switch (comp.operator) {
+                                .equal => std.mem.eql(u8, field_value, comp.value),
+                                .not_equal => !std.mem.eql(u8, field_value, comp.value),
+                                else => false, // String doesn't support < > comparisons
+                            };
+                        }
+                        
+                        if (!matches) continue;
+                    } else {
+                        continue; // Column doesn't exist in this row
+                    }
+                } else {
+                    // Column not found in header, skip all rows
+                    continue;
                 }
-            }
+            } else {
+                // Complex expressions (AND/OR/NOT) still use HashMap
+                // TODO: Optimize these as well
+                var row_map = std.StringHashMap([]const u8).init(allocator);
+                defer row_map.deinit();
 
-            if (!parser.evaluate(query.where_expr.?, row_map)) {
-                continue;
+                for (lower_header, 0..) |lower_name, idx| {
+                    if (idx < record.len) {
+                        try row_map.put(lower_name, record[idx]);
+                    }
+                }
+
+                if (!parser.evaluate(expr, row_map)) {
+                    continue;
+                }
             }
         }
 

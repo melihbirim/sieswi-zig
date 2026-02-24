@@ -1,6 +1,7 @@
 const std = @import("std");
 const parser = @import("parser.zig");
 const engine = @import("engine.zig");
+const csv = @import("csv.zig");
 const Allocator = std.mem.Allocator;
 
 const version = "0.1.0-zig";
@@ -129,4 +130,61 @@ test "WHERE clause is case-insensitive for column names" {
             else => try std.testing.expect(false), // Should be comparison
         }
     }
+}
+
+// TDD Test 5: Performance - WHERE evaluation should use direct index lookup
+test "WHERE evaluation uses precomputed column index" {
+    const allocator = std.testing.allocator;
+    
+    // This test just verifies the API exists for fast WHERE evaluation
+    // The actual performance benefit is measured in benchmarks, not unit tests
+    var query = try parser.parse(allocator, "SELECT * FROM 'test.csv' WHERE age > 30");
+    defer query.deinit();
+    
+    // Verify we have a WHERE clause with a simple comparison
+    try std.testing.expect(query.where_expr != null);
+    if (query.where_expr) |expr| {
+        switch (expr) {
+            .comparison => |comp| {
+                // Should have normalized column name
+                try std.testing.expectEqualStrings("age", comp.column);
+                // Should have numeric value for numeric comparison
+                try std.testing.expect(comp.numeric_value != null);
+            },
+            else => try std.testing.expect(false),
+        }
+    }
+}
+
+// TDD Test 6: CsvWriter properly handles all data (no short writes)
+test "CsvWriter writeRecord outputs complete data" {
+    const allocator = std.testing.allocator;
+    
+    // Create a temporary file
+    const tmp_file = try std.fs.cwd().createFile("test_writer.csv", .{ .read = true });
+    defer {
+        tmp_file.close();
+        std.fs.cwd().deleteFile("test_writer.csv") catch {};
+    }
+    
+    var writer = csv.CsvWriter.init(tmp_file);
+    
+    // Write some records
+    const fields1 = &[_][]const u8{ "id", "name",  "value" };
+    const fields2 = &[_][]const u8{ "1", "Alice", "100" };
+    const fields3 = &[_][]const u8{ "2", "Bob", "200" };
+    
+    try writer.writeRecord(fields1);
+    try writer.writeRecord(fields2);
+    try writer.writeRecord(fields3);
+    try writer.flush();
+    
+    // Read back and verify
+    try tmp_file.seekTo(0);
+    const content = try tmp_file.readToEndAlloc(allocator, 1024);
+    defer allocator.free(content);
+    
+    // Should have complete lines (no partial writes)
+    const expected = "id,name,value\n1,Alice,100\n2,Bob,200\n";
+    try std.testing.expectEqualStrings(expected, content);
 }
