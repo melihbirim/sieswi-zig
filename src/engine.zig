@@ -6,6 +6,37 @@ const mmap_engine = @import("mmap_engine.zig");
 const parallel_mmap = @import("parallel_mmap.zig");
 const Allocator = std.mem.Allocator;
 
+/// Result row for ORDER BY buffering
+const ResultRow = struct {
+    fields: [][]u8,
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator, size: usize) !ResultRow {
+        return ResultRow{
+            .fields = try allocator.alloc([]u8, size),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ResultRow) void {
+        for (self.fields) |field| {
+            self.allocator.free(field);
+        }
+        self.allocator.free(self.fields);
+    }
+
+    pub fn clone(self: *const ResultRow, allocator: Allocator) !ResultRow {
+        var fields = try allocator.alloc([]u8, self.fields.len);
+        for (self.fields, 0..) |field, i| {
+            fields[i] = try allocator.dupe(u8, field);
+        }
+        return ResultRow{
+            .fields = fields,
+            .allocator = allocator,
+        };
+    }
+};
+
 /// Execute a SQL query on a CSV file
 pub fn execute(allocator: Allocator, query: parser.Query, output_file: std.fs.File) !void {
     // Check if reading from stdin
@@ -128,6 +159,42 @@ fn executeSequential(
         }
     }
 
+    // Buffer for ORDER BY support
+    var result_buffer: ?std.ArrayList(ResultRow) = null;
+    var order_by_column_idx: ?usize = null;
+    defer {
+        if (result_buffer) |*buffer| {
+            for (buffer.items) |*row| {
+                row.deinit();
+            }
+            buffer.deinit(allocator);
+        }
+    }
+
+    // If ORDER BY is specified, prepare buffer and find column index
+    if (query.order_by) |order_by| {
+        result_buffer = std.ArrayList(ResultRow){};
+        // Find the ORDER BY column index in output columns
+        // order_by.column is already lowercase from parser
+        for (output_indices.items) |out_idx| {
+            if (out_idx < lower_header.len) {
+                if (std.mem.eql(u8, lower_header[out_idx], order_by.column)) {
+                    // Find position in output columns
+                    for (output_indices.items, 0..) |idx, pos| {
+                        if (idx == out_idx) {
+                            order_by_column_idx = pos;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        if (order_by_column_idx == null) {
+            return error.OrderByColumnNotFound;
+        }
+    }
+
     // Process rows
     var row_count: i32 = 0;
     var rows_written: i32 = 0;
@@ -205,17 +272,91 @@ fn executeSequential(
             output_row[i] = if (idx < record.len) record[idx] else "";
         }
 
-        try writer.writeRecord(output_row);
-        rows_written += 1;
+        // Either buffer for ORDER BY or write directly
+        if (result_buffer) |*buffer| {
+            // Buffer the row for sorting
+            var row = try ResultRow.init(allocator, output_row.len);
+            for (output_row, 0..) |field, i| {
+                row.fields[i] = try allocator.dupe(u8, field);
+            }
+            try buffer.append(allocator, row);
+            rows_written += 1;
 
-        // Check LIMIT
-        if (query.limit >= 0 and rows_written >= query.limit) {
-            break;
+            // Check LIMIT (but continue to respect all rows for ORDER BY)
+            // We still need to collect all rows for proper sorting
+        } else {
+            // Write directly (no ORDER BY)
+            try writer.writeRecord(output_row);
+            rows_written += 1;
+
+            // Check LIMIT
+            if (query.limit >= 0 and rows_written >= query.limit) {
+                break;
+            }
+
+            // Flush periodically (less often with 1MB buffer)
+            if (@rem(rows_written, 32768) == 0) {
+                try writer.flush();
+            }
         }
+    }
 
-        // Flush periodically (less often with 1MB buffer)
-        if (@rem(rows_written, 32768) == 0) {
-            try writer.flush();
+    // Sort and write buffered rows if ORDER BY is specified
+    if (result_buffer) |*buffer| {
+        if (query.order_by) |order_by| {
+            if (order_by_column_idx) |col_idx| {
+                // Sort the buffer
+                const Context = struct {
+                    col_idx: usize,
+                    descending: bool,
+
+                    pub fn lessThan(ctx: @This(), a: ResultRow, b: ResultRow) bool {
+                        if (ctx.col_idx >= a.fields.len or ctx.col_idx >= b.fields.len) {
+                            return false;
+                        }
+
+                        const a_val = a.fields[ctx.col_idx];
+                        const b_val = b.fields[ctx.col_idx];
+
+                        // Try numeric comparison first
+                        const a_num = std.fmt.parseFloat(f64, a_val) catch null;
+                        const b_num = std.fmt.parseFloat(f64, b_val) catch null;
+
+                        if (a_num != null and b_num != null) {
+                            // Both are numbers
+                            const result = a_num.? < b_num.?;
+                            return if (ctx.descending) !result else result;
+                        }
+
+                        // String comparison
+                        const cmp = std.mem.order(u8, a_val, b_val);
+                        const result = cmp == .lt;
+                        return if (ctx.descending) !result else result;
+                    }
+                };
+
+                const sort_context = Context{
+                    .col_idx = col_idx,
+                    .descending = order_by.order == .desc,
+                };
+
+                std.mem.sort(ResultRow, buffer.items, sort_context, Context.lessThan);
+
+                // Write sorted rows respecting LIMIT
+                var written: i32 = 0;
+                for (buffer.items) |row| {
+                    if (query.limit >= 0 and written >= query.limit) {
+                        break;
+                    }
+
+                    try writer.writeRecord(row.fields);
+                    written += 1;
+
+                    if (@rem(written, 32768) == 0) {
+                        try writer.flush();
+                    }
+                }
+            }
         }
     }
 

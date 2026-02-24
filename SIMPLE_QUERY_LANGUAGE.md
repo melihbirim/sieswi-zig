@@ -11,12 +11,14 @@ sieswi <file> [columns] [where] [limit] [orderby]
 ## Arguments
 
 ### 1. File (required)
+
 ```bash
 sieswi data.csv              # Path to CSV file
 sieswi /path/to/data.csv     # Absolute paths supported
 ```
 
 ### 2. Columns (optional, default: `*`)
+
 ```bash
 "*"                          # All columns (default)
 "id,name,score"              # Specific columns (comma-separated, spaces OK)
@@ -26,6 +28,7 @@ sieswi /path/to/data.csv     # Absolute paths supported
 ### 3. WHERE Clause (optional, default: no filter)
 
 **Single condition:**
+
 ```bash
 "age>30"                     # Greater than
 "score>=80"                  # Greater or equal
@@ -36,6 +39,7 @@ sieswi /path/to/data.csv     # Absolute paths supported
 ```
 
 **Multiple conditions (AND/OR):**
+
 ```bash
 "age>30 AND score>=80"       # Both conditions must match
 "city=NYC OR city=SF"        # Either condition matches
@@ -43,6 +47,7 @@ sieswi /path/to/data.csv     # Absolute paths supported
 ```
 
 **Supported operators:**
+
 - `=` - Equals
 - `!=` - Not equals
 - `>` - Greater than
@@ -51,10 +56,12 @@ sieswi /path/to/data.csv     # Absolute paths supported
 - `<=` - Less or equal
 
 **Case sensitivity:**
+
 - Column names: case-insensitive (`age`, `Age`, `AGE` all match)
 - String values: case-sensitive (`Alice` != `alice`)
 
 ### 4. Limit (optional, default: 10)
+
 ```bash
 0                            # No limit (all rows)
 10                           # First 10 rows (default if omitted)
@@ -62,6 +69,7 @@ sieswi /path/to/data.csv     # Absolute paths supported
 ```
 
 ### 5. Order By (optional, default: no sorting)
+
 ```bash
 "age"                        # Sort by age ascending (default)
 "age:asc"                    # Sort by age ascending (explicit)
@@ -72,6 +80,7 @@ sieswi /path/to/data.csv     # Absolute paths supported
 ## Examples
 
 ### Basic Usage
+
 ```bash
 # Show first 10 rows (default limit)
 sieswi data.csv
@@ -87,6 +96,7 @@ sieswi data.csv "*" "" 5
 ```
 
 ### Filtering
+
 ```bash
 # Simple filter
 sieswi data.csv "*" "age>30"
@@ -105,6 +115,7 @@ sieswi data.csv "name,age,city" "age>30 AND (city=NYC OR city=SF)" 20
 ```
 
 ### Sorting
+
 ```bash
 # Sort by age ascending
 sieswi data.csv "*" "" 10 "age:asc"
@@ -117,6 +128,7 @@ sieswi data.csv "name,age" "" 0 "name:asc"
 ```
 
 ### Real-World Examples
+
 ```bash
 # Top 10 highest scores
 sieswi scores.csv "name,score" "" 10 "score:desc"
@@ -147,6 +159,7 @@ sieswi data.csv "name,score" "score>=80" 10 "score:desc"
 ## Implementation Notes
 
 ### Positional Arguments
+
 All arguments are positional. To skip an argument, use empty string or defaults:
 
 ```bash
@@ -158,20 +171,25 @@ sieswi data.csv "*" "" 0 "age:desc"    # Sort only
 ```
 
 ### Auto-detection
+
 When first argument doesn't start with "SELECT", use simple mode:
+
 ```bash
 sieswi data.csv "name,age"             # Simple mode
 sieswi "SELECT name FROM 'data.csv'"   # SQL mode
 ```
 
 ### Compatibility
+
 Both syntaxes work simultaneously:
+
 - Simple mode: Fast, common operations
 - SQL mode: Complex queries (JOINs, GROUP BY, aggregates)
 
 ## Future Extensions
 
 Possible additions (not in v1):
+
 - Multiple sorts: `"age:desc,name:asc"`
 - LIKE operator: `"name~Alice%"`
 - IN operator: `"city IN (NYC,SF,LA)"`

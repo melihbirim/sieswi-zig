@@ -1,5 +1,6 @@
 const std = @import("std");
 const parser = @import("parser.zig");
+const simple_parser = @import("simple_parser.zig");
 const engine = @import("engine.zig");
 const Allocator = std.mem.Allocator;
 
@@ -23,14 +24,25 @@ pub fn main() !void {
         return;
     }
 
-    // Get query from args or stdin
-    const query_text = try getQueryFromArgsOrStdin(allocator, args);
-    defer allocator.free(query_text);
+    // Detect query mode: simple vs SQL
+    var query = if (args.len > 1 and !isSQL(args[1])) blk: {
+        // Simple mode: sieswi file.csv [columns] [where] [limit] [orderby]
+        const simple_args = args[1..];
+        break :blk simple_parser.parseSimple(allocator, simple_args) catch |err| {
+            std.debug.print("simple parse error: {}\n", .{err});
+            std.debug.print("usage: sieswi <file> [columns] [where] [limit] [orderby]\n", .{});
+            std.debug.print("   or: sieswi \"SELECT ... FROM ...\"\n", .{});
+            std.process.exit(1);
+        };
+    } else blk: {
+        // SQL mode: sieswi "SELECT ..."
+        const query_text = try getQueryFromArgsOrStdin(allocator, args);
+        defer allocator.free(query_text);
 
-    // Parse query
-    var query = parser.parse(allocator, query_text) catch |err| {
-        std.debug.print("parse error: {}\n", .{err});
-        std.process.exit(1);
+        break :blk parser.parse(allocator, query_text) catch |err| {
+            std.debug.print("SQL parse error: {}\n", .{err});
+            std.process.exit(1);
+        };
     };
     defer query.deinit();
 
@@ -40,6 +52,17 @@ pub fn main() !void {
         std.debug.print("execution error: {}\n", .{err});
         std.process.exit(1);
     };
+}
+
+/// Detect if argument is SQL query (starts with SELECT)
+fn isSQL(arg: []const u8) bool {
+    const trimmed = std.mem.trim(u8, arg, &std.ascii.whitespace);
+    if (trimmed.len < 6) return false;
+
+    // Check if starts with SELECT (case-insensitive)
+    var upper_buf: [6]u8 = undefined;
+    const upper = std.ascii.upperString(&upper_buf, trimmed[0..6]);
+    return std.mem.eql(u8, upper, "SELECT");
 }
 
 fn getQueryFromArgsOrStdin(allocator: Allocator, args: [][:0]u8) ![]u8 {

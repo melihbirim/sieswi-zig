@@ -70,6 +70,20 @@ pub const UnaryExpr = struct {
 };
 
 /// Represents a parsed SQL query
+pub const SortOrder = enum {
+    asc,
+    desc,
+};
+
+pub const OrderBy = struct {
+    column: []u8,
+    order: SortOrder,
+
+    pub fn deinit(self: *OrderBy, allocator: Allocator) void {
+        allocator.free(self.column);
+    }
+};
+
 pub const Query = struct {
     columns: [][]u8,
     all_columns: bool,
@@ -77,6 +91,7 @@ pub const Query = struct {
     where_expr: ?Expression,
     group_by: [][]u8,
     limit: i32,
+    order_by: ?OrderBy,
     allocator: Allocator,
 
     pub fn deinit(self: *Query) void {
@@ -94,6 +109,10 @@ pub const Query = struct {
             self.allocator.free(col);
         }
         self.allocator.free(self.group_by);
+
+        if (self.order_by) |*ob| {
+            ob.deinit(self.allocator);
+        }
     }
 };
 
@@ -108,6 +127,7 @@ pub fn parse(allocator: Allocator, input: []const u8) !Query {
         .where_expr = null,
         .group_by = undefined,
         .limit = -1,
+        .order_by = null,
         .allocator = allocator,
     };
 
