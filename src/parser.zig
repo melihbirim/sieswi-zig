@@ -237,9 +237,13 @@ fn parseComparison(allocator: Allocator, input: []const u8, op_str: []const u8, 
     const value_clean = trimQuotes(value_part);
     const numeric_value = std.fmt.parseFloat(f64, value_clean) catch null;
 
+    // FIXED: Normalize column name to lowercase for case-insensitive matching
+    const column_lower = try allocator.alloc(u8, column_part.len);
+    _ = std.ascii.lowerString(column_lower, column_part);
+
     return Expression{
         .comparison = Comparison{
-            .column = try allocator.dupe(u8, column_part),
+            .column = column_lower,  // Use lowercased version
             .operator = operator,
             .value = try allocator.dupe(u8, value_clean),
             .numeric_value = numeric_value,

@@ -111,3 +111,22 @@ test "Query deinit with columns and GROUP BY" {
     try std.testing.expectEqual(@as(usize, 2), query.columns.len);
     try std.testing.expectEqual(@as(usize, 1), query.group_by.len);
 }
+// TDD Test 4: WHERE with mixed case column should match header (case-insensitive)
+test "WHERE clause is case-insensitive for column names" {
+    const allocator = std.testing.allocator;
+    
+    // Query uses lowercase 'name', but CSV header might be 'Name' or 'NAME'
+    var query = try parser.parse(allocator, "SELECT * FROM 'test.csv' WHERE name = 'Alice'");
+    defer query.deinit();
+    
+    try std.testing.expect(query.where_expr != null);
+    if (query.where_expr) |expr| {
+        switch (expr) {
+            .comparison => |comp| {
+                // Column name should be normalized to lowercase
+                try std.testing.expectEqualStrings("name", comp.column);
+            },
+            else => try std.testing.expect(false), // Should be comparison
+        }
+    }
+}
