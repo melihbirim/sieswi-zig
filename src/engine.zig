@@ -311,26 +311,14 @@ fn executeSequential(
                     descending: bool,
 
                     pub fn lessThan(ctx: @This(), a: ResultRow, b: ResultRow) bool {
-                        if (ctx.col_idx >= a.fields.len or ctx.col_idx >= b.fields.len) {
-                            return false;
-                        }
+                        if (ctx.col_idx >= a.fields.len) return false;
+                        if (ctx.col_idx >= b.fields.len) return false;
 
                         const a_val = a.fields[ctx.col_idx];
                         const b_val = b.fields[ctx.col_idx];
 
-                        // Try numeric comparison first
-                        const a_num = std.fmt.parseFloat(f64, a_val) catch null;
-                        const b_num = std.fmt.parseFloat(f64, b_val) catch null;
-
-                        if (a_num != null and b_num != null) {
-                            // Both are numbers
-                            const result = a_num.? < b_num.?;
-                            return if (ctx.descending) !result else result;
-                        }
-
-                        // String comparison
-                        const cmp = std.mem.order(u8, a_val, b_val);
-                        const result = cmp == .lt;
+                        // Use std.mem.lessThan for consistent string comparison
+                        const result = std.mem.lessThan(u8, a_val, b_val);
                         return if (ctx.descending) !result else result;
                     }
                 };
