@@ -2,6 +2,7 @@ const std = @import("std");
 const parser = @import("parser.zig");
 const csv = @import("csv.zig");
 const simd = @import("simd.zig");
+const fast_sort = @import("fast_sort.zig");
 const Allocator = std.mem.Allocator;
 
 const WorkChunk = struct {
@@ -218,41 +219,41 @@ pub fn executeParallelMapped(
 
         for (threads) |thread| thread.join();
 
-        // Merge all sort entries
+        // Merge all sort entries and convert to fast_sort.SortKey
         var total_entries: usize = 0;
         for (sort_contexts) |ctx| total_entries += ctx.result.items.len;
 
-        var all_entries = try std.ArrayList(SortLine).initCapacity(allocator, total_entries);
-        defer all_entries.deinit(allocator);
+        var all_entries = try allocator.alloc(fast_sort.SortKey, total_entries);
+        defer allocator.free(all_entries);
 
+        var offset: usize = 0;
         for (sort_contexts) |*ctx| {
-            all_entries.appendSliceAssumeCapacity(ctx.result.items);
+            for (ctx.result.items) |entry| {
+                all_entries[offset] = fast_sort.makeSortKey(
+                    entry.numeric_key,
+                    entry.sort_key,
+                    entry.line,
+                );
+                offset += 1;
+            }
             ctx.result.deinit(allocator);
         }
 
-        // Sort
-        const SortCtx = struct {
-            descending: bool,
-            pub fn lessThan(ctx: @This(), a: SortLine, b: SortLine) bool {
-                // Fast path: both numeric (pre-parsed, no parseFloat overhead)
-                const a_is_num = !std.math.isNan(a.numeric_key);
-                const b_is_num = !std.math.isNan(b.numeric_key);
-                if (a_is_num and b_is_num) {
-                    if (ctx.descending) return b.numeric_key < a.numeric_key else return a.numeric_key < b.numeric_key;
-                }
-                // Fallback: string comparison
-                if (ctx.descending) return std.mem.lessThan(u8, b.sort_key, a.sort_key) else return std.mem.lessThan(u8, a.sort_key, b.sort_key);
-            }
-        };
-
-        std.mem.sort(SortLine, all_entries.items, SortCtx{ .descending = order_by.order == .desc }, SortCtx.lessThan);
+        // Sort using hardware-aware strategy (radix/heap/comparison)
+        const limit: ?usize = if (query.limit >= 0) @intCast(query.limit) else null;
+        const sorted = try fast_sort.sortEntries(
+            allocator,
+            all_entries,
+            order_by.order == .desc,
+            limit,
+        );
 
         // Write top K rows — re-parse only these lines to extract output columns
         var output_row = try allocator.alloc([]const u8, output_indices.items.len);
         defer allocator.free(output_row);
 
         var written: usize = 0;
-        for (all_entries.items) |entry| {
+        for (sorted) |entry| {
             if (query.limit >= 0 and written >= @as(usize, @intCast(query.limit))) break;
 
             // Parse the raw line to extract output columns

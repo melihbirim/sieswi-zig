@@ -4,14 +4,11 @@ const csv = @import("csv.zig");
 const bulk_csv = @import("bulk_csv.zig");
 const mmap_engine = @import("mmap_engine.zig");
 const parallel_mmap = @import("parallel_mmap.zig");
+const fast_sort = @import("fast_sort.zig");
 const Allocator = std.mem.Allocator;
 
-/// Result row for ORDER BY buffering — stores sort key + CSV line
-const SortEntry = struct {
-    numeric_key: f64, // pre-parsed numeric value (NaN if not numeric)
-    sort_key: []const u8, // slice into arena for the sort column value
-    line: []const u8, // slice into arena for the full CSV output line
-};
+/// Result row for ORDER BY buffering — uses fast_sort SortKey
+const SortEntry = fast_sort.SortKey;
 
 /// Arena buffer for ORDER BY — single large allocation instead of per-field allocs
 const ArenaBuffer = struct {
@@ -295,11 +292,11 @@ fn executeSequential(
             }
             const line = a.data[line_start..a.pos];
 
-            try entries.append(allocator, SortEntry{
-                .numeric_key = std.fmt.parseFloat(f64, sort_key) catch std.math.nan(f64),
-                .sort_key = sort_key,
-                .line = line,
-            });
+            try entries.append(allocator, fast_sort.makeSortKey(
+                std.fmt.parseFloat(f64, sort_key) catch std.math.nan(f64),
+                sort_key,
+                line,
+            ));
             rows_written += 1;
         } else {
             // Write directly (no ORDER BY)
@@ -321,36 +318,18 @@ fn executeSequential(
     // Sort and write buffered rows if ORDER BY is specified
     if (sort_entries) |*entries| {
         if (query.order_by) |order_by| {
-            // Sort the entries
-            const Context = struct {
-                descending: bool,
+            const limit: ?usize = if (query.limit >= 0) @intCast(query.limit) else null;
+            const sorted = try fast_sort.sortEntries(
+                allocator,
+                entries.items,
+                order_by.order == .desc,
+                limit,
+            );
 
-                pub fn lessThan(ctx: @This(), a: SortEntry, b: SortEntry) bool {
-                    const a_is_num = !std.math.isNan(a.numeric_key);
-                    const b_is_num = !std.math.isNan(b.numeric_key);
-                    if (a_is_num and b_is_num) {
-                        if (ctx.descending) return b.numeric_key < a.numeric_key else return a.numeric_key < b.numeric_key;
-                    }
-                    if (ctx.descending) return std.mem.lessThan(u8, b.sort_key, a.sort_key) else return std.mem.lessThan(u8, a.sort_key, b.sort_key);
-                }
-            };
-
-            const sort_context = Context{
-                .descending = order_by.order == .desc,
-            };
-
-            std.mem.sort(SortEntry, entries.items, sort_context, Context.lessThan);
-
-            // Write sorted rows respecting LIMIT
-            var written: i32 = 0;
-            for (entries.items) |entry| {
-                if (query.limit >= 0 and written >= query.limit) {
-                    break;
-                }
-
+            // Write sorted rows
+            for (sorted) |entry| {
                 try writer.writeToBuffer(entry.line);
                 try writer.writeToBuffer("\n");
-                written += 1;
             }
         }
     }
