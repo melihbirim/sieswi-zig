@@ -74,15 +74,38 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(mmap_example);
 
     // Tests
-    const unit_tests = b.addTest(.{
+    const test_step = b.step("test", "Run unit tests");
+    
+    // Create modules for tests to import
+    const parser_module = b.addModule("parser", .{
+        .root_source_file = b.path("src/parser.zig"),
+    });
+    
+    const csv_test_module = b.addModule("csv", .{
+        .root_source_file = b.path("src/csv.zig"),
+    });
+    
+    // Parser tests
+    const parser_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .target = target,
             .optimize = optimize,
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("tests/parser_test.zig"),
         }),
     });
-
-    const run_unit_tests = b.addRunArtifact(unit_tests);
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_unit_tests.step);
+    parser_tests.root_module.addImport("parser", parser_module);
+    const run_parser_tests = b.addRunArtifact(parser_tests);
+    test_step.dependOn(&run_parser_tests.step);
+    
+    // CSV tests
+    const csv_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .root_source_file = b.path("tests/csv_test.zig"),
+        }),
+    });
+    csv_tests.root_module.addImport("csv", csv_test_module);
+    const run_csv_tests = b.addRunArtifact(csv_tests);
+    test_step.dependOn(&run_csv_tests.step);
 }
