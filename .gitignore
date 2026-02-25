@@ -19,7 +19,7 @@ test_*.csv
 *.tmp
 
 # Binaries
-sieswi
+csvq
 *.exe
 *.dll
 *.so

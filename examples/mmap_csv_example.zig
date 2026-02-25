@@ -1,7 +1,7 @@
 const std = @import("std");
 
 /// Example: High-performance CSV parsing with memory-mapped I/O
-/// This is the fastest way to parse CSV files - used in sieswi's parallel engine
+/// This is the fastest way to parse CSV files - used in csvq's parallel engine
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();

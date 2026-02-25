@@ -1,10 +1,10 @@
-# Performance Benchmarks: sieswi-zig vs DuckDB vs DataFusion vs ClickHouse
+# Performance Benchmarks: csvq vs DuckDB vs DataFusion vs ClickHouse
 
 ## Test Environment
 
 - **Hardware**: Apple M2, macOS
 - **Dataset**: 1,000,000 rows, 35MB CSV file
-- **sieswi-zig**: Zig 0.15.2, ReleaseFast build
+- **csvq**: Zig 0.15.2, ReleaseFast build
 - **DuckDB**: Latest version via Homebrew (forced full output with `-csv`)
 - **DataFusion**: v52.1.0 via Homebrew (forced `--format csv`)
 - **ClickHouse**: v26.1.3.52 via Homebrew (forced `FORMAT CSV`)
@@ -17,7 +17,7 @@
 
 ### Headline Results (1M rows, 35MB CSV, Apple M2)
 
-| Query | sieswi | DuckDB | DataFusion* | ClickHouse | sieswi vs DuckDB |
+| Query | csvq | DuckDB | DataFusion* | ClickHouse | csvq vs DuckDB |
 |-------|--------|--------|-------------|------------|-------------------|
 | **Q1:** WHERE + ORDER BY LIMIT 10 | **0.020s** | 0.179s | 0.243s | 0.750s | 🏆 **9x faster** |
 | **Q2:** ORDER BY LIMIT 10 | **0.041s** | 0.165s | 0.143s | 0.761s | 🏆 **4x faster** |
@@ -35,12 +35,12 @@ Query: `SELECT name, city, salary FROM large_test.csv WHERE salary > 100000 ORDE
 
 | Engine | Time | Notes |
 |--------|------|-------|
-| **sieswi-zig** | **0.020s** | Top-K heap O(N log K) + early filter |
+| **csvq** | **0.020s** | Top-K heap O(N log K) + early filter |
 | DuckDB | 0.179s | `-csv` mode for fair output |
 | DataFusion | 0.243s | `--format csv` |
 | ClickHouse | 0.750s | Heavy startup overhead |
 
-**Winner**: sieswi-zig **9x faster than DuckDB** ⚡
+**Winner**: csvq **9x faster than DuckDB** ⚡
 
 ---
 
@@ -50,12 +50,12 @@ Query: `SELECT name, city, salary FROM large_test.csv ORDER BY salary DESC LIMIT
 
 | Engine | Time | Notes |
 |--------|------|-------|
-| **sieswi-zig** | **0.041s** | Top-K heap — no full sort needed |
+| **csvq** | **0.041s** | Top-K heap — no full sort needed |
 | DataFusion | 0.143s | |
 | DuckDB | 0.165s | |
 | ClickHouse | 0.761s | |
 
-**Winner**: sieswi-zig **4x faster than DuckDB** ⚡
+**Winner**: csvq **4x faster than DuckDB** ⚡
 
 ---
 
@@ -65,13 +65,13 @@ Query: `SELECT name, city, salary FROM large_test.csv ORDER BY salary DESC`
 
 | Engine | Time | Notes |
 |--------|------|-------|
-| **sieswi-zig** | **0.156s** | Radix sort + pass-skipping + indirect sort |
+| **csvq** | **0.156s** | Radix sort + pass-skipping + indirect sort |
 | ClickHouse | 0.451s | |
 | DuckDB | 1.221s | DuckDB's real time with `-csv` full output |
 
-**Winner**: sieswi-zig **7.8x faster than DuckDB** ⚡
+**Winner**: csvq **7.8x faster than DuckDB** ⚡
 
-**Key Insight**: DuckDB appears fast (0.22s) in default mode because it only displays 40 rows. When forced to actually output all 1M sorted rows with `-csv`, it takes 1.221s — revealing sieswi's massive advantage.
+**Key Insight**: DuckDB appears fast (0.22s) in default mode because it only displays 40 rows. When forced to actually output all 1M sorted rows with `-csv`, it takes 1.221s — revealing csvq's massive advantage.
 
 ---
 
@@ -83,11 +83,11 @@ Output: ~450K matching rows
 
 | Engine | Time | Notes |
 |--------|------|-------|
-| **sieswi-zig** | **0.141s** | Parallel mmap + zero-copy output |
+| **csvq** | **0.141s** | Parallel mmap + zero-copy output |
 | DuckDB | 0.739s | |
 | ClickHouse | 0.796s | |
 
-**Winner**: sieswi-zig **5.2x faster than DuckDB** ⚡
+**Winner**: csvq **5.2x faster than DuckDB** ⚡
 
 ---
 
@@ -97,11 +97,11 @@ Query: `SELECT name, city, salary FROM large_test.csv`
 
 | Engine | Time | Notes |
 |--------|------|-------|
-| **sieswi-zig** | **0.196s** | ~178 MB/sec effective throughput |
+| **csvq** | **0.196s** | ~178 MB/sec effective throughput |
 | ClickHouse | 0.798s | |
 | DuckDB | 1.163s | |
 
-**Winner**: sieswi-zig **5.9x faster than DuckDB** ⚡
+**Winner**: csvq **5.9x faster than DuckDB** ⚡
 
 ---
 
@@ -111,16 +111,16 @@ Query: `SELECT name, city FROM large_test.csv WHERE age > 50 LIMIT 100`
 
 | Engine         | Max Resident | Peak Footprint |
 | -------------- | ------------ | -------------- |
-| **sieswi-zig** | 1.8 MB       | 1.4 MB         |
+| **csvq** | 1.8 MB       | 1.4 MB         |
 | **DuckDB**     | 63.5 MB      | 51.1 MB        |
 
-**Winner**: sieswi-zig uses **35x less memory** 🎯
+**Winner**: csvq uses **35x less memory** 🎯
 
 ---
 
 ## Key Insights
 
-### sieswi-zig Advantages ✓
+### csvq Advantages ✓
 
 - **Extremely memory efficient**: 1.8MB vs 63.5MB (35x less)
 - **Fastest sorting**: Top-K heap O(N log K) for LIMIT, radix sort O(N) for full sort
@@ -194,7 +194,7 @@ Query: `SELECT name, city FROM large_test.csv WHERE age > 50 LIMIT 100`
 
 ## Conclusion
 
-**sieswi-zig beats DuckDB, DataFusion, and ClickHouse** on every query type when output is measured fairly.
+**csvq beats DuckDB, DataFusion, and ClickHouse** on every query type when output is measured fairly.
 
 Key achievements:
 
@@ -221,14 +221,14 @@ Key achievements:
 
 | Scenario | Winner | Magnitude | Reason |
 |----------|--------|-----------|---------|
-| **WHERE + ORDER BY LIMIT 10** | **sieswi-zig** 🏆 | **9x faster** | Top-K heap + streaming filter |
-| **ORDER BY LIMIT 10** | **sieswi-zig** 🏆 | **4x faster** | O(N log K) heap, no full sort |
-| **ORDER BY (1M rows)** | **sieswi-zig** 🏆 | **7.8x faster** | Radix sort + pass-skipping |
-| **WHERE (full output)** | **sieswi-zig** 🏆 | **5.2x faster** | Zero-copy + lock-free parallel |
-| **Full scan (1M rows)** | **sieswi-zig** 🏆 | **5.9x faster** | mmap + SIMD + parallel output |
-| **Memory usage** | **sieswi-zig** 🏆 | **35x less** | Streaming architecture |
+| **WHERE + ORDER BY LIMIT 10** | **csvq** 🏆 | **9x faster** | Top-K heap + streaming filter |
+| **ORDER BY LIMIT 10** | **csvq** 🏆 | **4x faster** | O(N log K) heap, no full sort |
+| **ORDER BY (1M rows)** | **csvq** 🏆 | **7.8x faster** | Radix sort + pass-skipping |
+| **WHERE (full output)** | **csvq** 🏆 | **5.2x faster** | Zero-copy + lock-free parallel |
+| **Full scan (1M rows)** | **csvq** 🏆 | **5.9x faster** | mmap + SIMD + parallel output |
+| **Memory usage** | **csvq** 🏆 | **35x less** | Streaming architecture |
 
-### sieswi-zig Optimization Journey 🚀
+### csvq Optimization Journey 🚀
 
 - **Started**: 25.38s (baseline sequential implementation)
 - **Ended**: 0.020s LIMIT / 0.156s full sort (zero-copy + radix sort + top-K heap)
@@ -239,7 +239,7 @@ Key achievements:
 
 ---
 
-**sieswi-zig is the fastest CSV query engine** — choose it for:
+**csvq is the fastest CSV query engine** — choose it for:
 - **Sorting & top-K**: Radix sort + heap beats every competitor
 - **Full scans**: 5-8x faster than DuckDB with full output
 - **Pipelines**: Minimal memory, instant startup, streaming output
