@@ -5,7 +5,7 @@ Alternative to SQL syntax for common CSV operations. Simpler, more Unix-tool-lik
 ## Syntax
 
 ```bash
-sieswi <file> [columns] [where] [limit] [orderby]
+csvq <file> [columns] [where] [limit] [orderby]
 ```
 
 ## Arguments
@@ -13,8 +13,8 @@ sieswi <file> [columns] [where] [limit] [orderby]
 ### 1. File (required)
 
 ```bash
-sieswi data.csv              # Path to CSV file
-sieswi /path/to/data.csv     # Absolute paths supported
+csvq data.csv              # Path to CSV file
+csvq /path/to/data.csv     # Absolute paths supported
 ```
 
 ### 2. Columns (optional, default: `*`)
@@ -83,77 +83,77 @@ sieswi /path/to/data.csv     # Absolute paths supported
 
 ```bash
 # Show first 10 rows (default limit)
-sieswi data.csv
+csvq data.csv
 
 # Show all rows
-sieswi data.csv "*" "" 0
+csvq data.csv "*" "" 0
 
 # Select specific columns
-sieswi data.csv "id,name,age"
+csvq data.csv "id,name,age"
 
 # Quick peek at data (first 5 rows)
-sieswi data.csv "*" "" 5
+csvq data.csv "*" "" 5
 ```
 
 ### Filtering
 
 ```bash
 # Simple filter
-sieswi data.csv "*" "age>30"
+csvq data.csv "*" "age>30"
 
 # Filter with specific columns
-sieswi data.csv "name,score" "score>=80"
+csvq data.csv "name,score" "score>=80"
 
 # Multiple conditions (AND)
-sieswi data.csv "*" "age>25 AND score>=80"
+csvq data.csv "*" "age>25 AND score>=80"
 
 # Multiple conditions (OR)
-sieswi data.csv "*" "city=NYC OR city=SF"
+csvq data.csv "*" "city=NYC OR city=SF"
 
 # Complex filter
-sieswi data.csv "name,age,city" "age>30 AND (city=NYC OR city=SF)" 20
+csvq data.csv "name,age,city" "age>30 AND (city=NYC OR city=SF)" 20
 ```
 
 ### Sorting
 
 ```bash
 # Sort by age ascending
-sieswi data.csv "*" "" 10 "age:asc"
+csvq data.csv "*" "" 10 "age:asc"
 
 # Sort by score descending, show top 10
-sieswi data.csv "name,score" "score>0" 10 "score:desc"
+csvq data.csv "name,score" "score>0" 10 "score:desc"
 
 # Sort alphabetically by name
-sieswi data.csv "name,age" "" 0 "name:asc"
+csvq data.csv "name,age" "" 0 "name:asc"
 ```
 
 ### Real-World Examples
 
 ```bash
 # Top 10 highest scores
-sieswi scores.csv "name,score" "" 10 "score:desc"
+csvq scores.csv "name,score" "" 10 "score:desc"
 
 # Young employees in NYC
-sieswi employees.csv "name,age,city" "age<30 AND city=NYC"
+csvq employees.csv "name,age,city" "age<30 AND city=NYC"
 
 # All high performers, sorted by name
-sieswi performance.csv "*" "rating>=4.5" 0 "name:asc"
+csvq performance.csv "*" "rating>=4.5" 0 "name:asc"
 
 # Quick data inspection
-sieswi large_file.csv "*" "" 5
+csvq large_file.csv "*" "" 5
 
 # Filter and limit
-sieswi sales.csv "product,revenue" "revenue>1000" 20
+csvq sales.csv "product,revenue" "revenue>1000" 20
 ```
 
 ## Comparison with SQL
 
 ```bash
 # SQL syntax (verbose)
-sieswi "SELECT name, score FROM 'data.csv' WHERE score >= 80 ORDER BY score DESC LIMIT 10"
+csvq "SELECT name, score FROM 'data.csv' WHERE score >= 80 ORDER BY score DESC LIMIT 10"
 
 # Simple syntax (concise)
-sieswi data.csv "name,score" "score>=80" 10 "score:desc"
+csvq data.csv "name,score" "score>=80" 10 "score:desc"
 ```
 
 ## Implementation Notes
@@ -163,11 +163,11 @@ sieswi data.csv "name,score" "score>=80" 10 "score:desc"
 All arguments are positional. To skip an argument, use empty string or defaults:
 
 ```bash
-sieswi data.csv                        # All defaults
-sieswi data.csv "id,name"              # Columns only
-sieswi data.csv "*" "age>30"           # Filter only
-sieswi data.csv "*" "" 5               # Limit only
-sieswi data.csv "*" "" 0 "age:desc"    # Sort only
+csvq data.csv                        # All defaults
+csvq data.csv "id,name"              # Columns only
+csvq data.csv "*" "age>30"           # Filter only
+csvq data.csv "*" "" 5               # Limit only
+csvq data.csv "*" "" 0 "age:desc"    # Sort only
 ```
 
 ### Auto-detection
@@ -175,8 +175,8 @@ sieswi data.csv "*" "" 0 "age:desc"    # Sort only
 When first argument doesn't start with "SELECT", use simple mode:
 
 ```bash
-sieswi data.csv "name,age"             # Simple mode
-sieswi "SELECT name FROM 'data.csv'"   # SQL mode
+csvq data.csv "name,age"             # Simple mode
+csvq "SELECT name FROM 'data.csv'"   # SQL mode
 ```
 
 ### Compatibility

@@ -18,7 +18,7 @@ pub fn main() !void {
     // Check for version flag
     if (args.len >= 2 and (std.mem.eql(u8, args[1], "--version") or std.mem.eql(u8, args[1], "-v"))) {
         const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
-        try stderr.writeAll("sieswi ");
+        try stderr.writeAll("csvq ");
         try stderr.writeAll(version);
         try stderr.writeAll(" (Zig implementation)\n");
         return;
@@ -26,16 +26,16 @@ pub fn main() !void {
 
     // Detect query mode: simple vs SQL
     var query = if (args.len > 1 and !isSQL(args[1])) blk: {
-        // Simple mode: sieswi file.csv [columns] [where] [limit] [orderby]
+        // Simple mode: csvq file.csv [columns] [where] [limit] [orderby]
         const simple_args = args[1..];
         break :blk simple_parser.parseSimple(allocator, simple_args) catch |err| {
             std.debug.print("simple parse error: {}\n", .{err});
-            std.debug.print("usage: sieswi <file> [columns] [where] [limit] [orderby]\n", .{});
-            std.debug.print("   or: sieswi \"SELECT ... FROM ...\"\n", .{});
+            std.debug.print("usage: csvq <file> [columns] [where] [limit] [orderby]\n", .{});
+            std.debug.print("   or: csvq \"SELECT ... FROM ...\"\n", .{});
             std.process.exit(1);
         };
     } else blk: {
-        // SQL mode: sieswi "SELECT ..."
+        // SQL mode: csvq "SELECT ..."
         const query_text = try getQueryFromArgsOrStdin(allocator, args);
         defer allocator.free(query_text);
 
@@ -86,7 +86,7 @@ fn getQueryFromArgsOrStdin(allocator: Allocator, args: [][:0]u8) ![]u8 {
 
     if (trimmed.len == 0) {
         const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
-        try stderr.writeAll("usage: sieswi \"SELECT ...\" (or pipe query via stdin)\n");
+        try stderr.writeAll("usage: csvq \"SELECT ...\" (or pipe query via stdin)\n");
         std.process.exit(1);
     }
 

@@ -16,13 +16,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-linux
-            artifact: sieswi-linux-x86_64
+            artifact: csvq-linux-x86_64
           - os: macos-latest
             target: x86_64-macos
-            artifact: sieswi-macos-x86_64
+            artifact: csvq-macos-x86_64
           - os: macos-latest
             target: aarch64-macos
-            artifact: sieswi-macos-aarch64
+            artifact: csvq-macos-aarch64
             
     runs-on: ${{ matrix.os }}
     
@@ -41,7 +41,7 @@ jobs:
     - name: Prepare artifact
       run: |
         mkdir -p release
-        cp zig-out/bin/sieswi release/${{ matrix.artifact }}
+        cp zig-out/bin/csvq release/${{ matrix.artifact }}
         cd release
         tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
         

@@ -2,7 +2,7 @@ const std = @import("std");
 const parser = @import("parser.zig");
 const Allocator = std.mem.Allocator;
 
-/// Parse simple query syntax: sieswi <file> [columns] [where] [limit] [orderby]
+/// Parse simple query syntax: csvq <file> [columns] [where] [limit] [orderby]
 pub fn parseSimple(allocator: Allocator, args: []const []const u8) !parser.Query {
     if (args.len == 0) {
         return error.MissingFile;

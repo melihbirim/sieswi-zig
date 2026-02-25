@@ -1,4 +1,4 @@
-# sieswi-zig
+# csvq
 
 **The world's fastest CSV query engine** 🚀
 
@@ -6,20 +6,20 @@ A high-performance SQL query engine for CSV files that **beats DuckDB, DataFusio
 
 ```bash
 # SQL mode: Query 1M rows with WHERE + ORDER BY in 0.020s (9x faster than DuckDB!)
-sieswi "SELECT name, city, salary FROM 'data.csv' WHERE salary > 100000 ORDER BY salary DESC LIMIT 10"
+csvq "SELECT name, city, salary FROM 'data.csv' WHERE salary > 100000 ORDER BY salary DESC LIMIT 10"
 
 # Simple mode: Same query, shorter syntax
-sieswi data.csv "name,city,salary" "salary>100000" 10 "salary:desc"
+csvq data.csv "name,city,salary" "salary>100000" 10 "salary:desc"
 
 # Full scan + sort 1M rows in 0.156s (7.8x faster than DuckDB!)
-sieswi "SELECT name, city, salary FROM 'data.csv' ORDER BY salary DESC"
+csvq "SELECT name, city, salary FROM 'data.csv' ORDER BY salary DESC"
 ```
 
 ## 🏆 Performance (1M rows, 35MB CSV)
 
 Fair benchmarks — all tools forced to output all rows (no 40-row display tricks):
 
-| Query | sieswi | DuckDB | DataFusion | ClickHouse |
+| Query | csvq | DuckDB | DataFusion | ClickHouse |
 |-------|--------|--------|------------|------------|
 | WHERE + ORDER BY LIMIT 10 | **0.020s** | 0.179s | 0.243s | 0.750s |
 | ORDER BY LIMIT 10 | **0.041s** | 0.165s | 0.143s | 0.761s |
@@ -88,18 +88,18 @@ This is a Zig reimplementation of the original Go version, bringing:
 ### Build from Source
 
 ```bash
-git clone https://github.com/melihbirim/sieswi-zig
-cd sieswi-zig
+git clone https://github.com/melihbirim/csvq
+cd csvq
 zig build -Doptimize=ReleaseFast
 ```
 
-The binary will be in `zig-out/bin/sieswi`.
+The binary will be in `zig-out/bin/csvq`.
 
 ### Install
 
 ```bash
 # Copy to your PATH
-sudo cp zig-out/bin/sieswi /usr/local/bin/
+sudo cp zig-out/bin/csvq /usr/local/bin/
 ```
 
 ## Quick Start
@@ -108,19 +108,19 @@ sudo cp zig-out/bin/sieswi /usr/local/bin/
 
 ```bash
 # Show first 10 rows (default)
-sieswi data.csv
+csvq data.csv
 
 # Select specific columns
-sieswi data.csv "name,age,city"
+csvq data.csv "name,age,city"
 
 # Filter rows
-sieswi data.csv "*" "age>30"
+csvq data.csv "*" "age>30"
 
 # Top 10 highest salaries
-sieswi data.csv "name,salary" "salary>0" 10 "salary:desc"
+csvq data.csv "name,salary" "salary>0" 10 "salary:desc"
 
 # All rows, no limit, sorted by name
-sieswi data.csv "*" "" 0 "name:asc"
+csvq data.csv "*" "" 0 "name:asc"
 ```
 
 See [SIMPLE_QUERY_LANGUAGE.md](SIMPLE_QUERY_LANGUAGE.md) for full syntax reference.
@@ -129,42 +129,42 @@ See [SIMPLE_QUERY_LANGUAGE.md](SIMPLE_QUERY_LANGUAGE.md) for full syntax referen
 
 ```bash
 # Select all columns
-sieswi "SELECT * FROM 'data.csv' LIMIT 10"
+csvq "SELECT * FROM 'data.csv' LIMIT 10"
 
 # Select specific columns
-sieswi "SELECT name, age FROM 'users.csv'"
+csvq "SELECT name, age FROM 'users.csv'"
 
 # Filter with WHERE clause
-sieswi "SELECT * FROM 'sales.csv' WHERE amount > 100"
+csvq "SELECT * FROM 'sales.csv' WHERE amount > 100"
 
 # Filter, sort, and limit
-sieswi "SELECT name, salary FROM 'data.csv' WHERE age > 30 ORDER BY salary DESC LIMIT 10"
+csvq "SELECT name, salary FROM 'data.csv' WHERE age > 30 ORDER BY salary DESC LIMIT 10"
 
 # Combine filtering and projection
-sieswi "SELECT name, email FROM 'users.csv' WHERE age >= 18 LIMIT 100"
+csvq "SELECT name, email FROM 'users.csv' WHERE age >= 18 LIMIT 100"
 ```
 
 ### Unix Pipes
 
 ```bash
 # Read from stdin
-cat data.csv | sieswi "SELECT name, age FROM '-' WHERE age > 25"
+cat data.csv | csvq "SELECT name, age FROM '-' WHERE age > 25"
 
 # Chain filters
-cat orders.csv | sieswi "SELECT * FROM '-' WHERE country = 'US'" | sieswi "SELECT total FROM '-' WHERE total > 1000"
+cat orders.csv | csvq "SELECT * FROM '-' WHERE country = 'US'" | csvq "SELECT total FROM '-' WHERE total > 1000"
 
 # Monitor live logs
-tail -f logs.csv | sieswi "SELECT timestamp, message FROM '-' WHERE level = 'ERROR'"
+tail -f logs.csv | csvq "SELECT timestamp, message FROM '-' WHERE level = 'ERROR'"
 ```
 
 ### Output Redirection
 
 ```bash
 # Write to file
-sieswi "SELECT * FROM 'data.csv' WHERE status = 'active'" > active_users.csv
+csvq "SELECT * FROM 'data.csv' WHERE status = 'active'" > active_users.csv
 
 # Pipe to other tools
-sieswi "SELECT email FROM 'users.csv'" | wc -l
+csvq "SELECT email FROM 'users.csv'" | wc -l
 ```
 
 ## SQL Support
@@ -190,7 +190,7 @@ sieswi "SELECT email FROM 'users.csv'" | wc -l
 
 ## Using the CSV Parser as a Library
 
-sieswi includes a **world-class CSV parser** that you can use in your own Zig projects!
+csvq includes a **world-class CSV parser** that you can use in your own Zig projects!
 
 ### Why Use Our Parser?
 
@@ -206,9 +206,9 @@ sieswi includes a **world-class CSV parser** that you can use in your own Zig pr
 
 ```zig
 .dependencies = .{
-    .sieswi = .{
-        .url = "https://github.com/melihbirim/sieswi-zig/archive/main.tar.gz",
-        // Get hash: zig fetch --save https://github.com/melihbirim/sieswi-zig/archive/main.tar.gz
+    .csvq = .{
+        .url = "https://github.com/melihbirim/csvq/archive/main.tar.gz",
+        // Get hash: zig fetch --save https://github.com/melihbirim/csvq/archive/main.tar.gz
     },
 },
 ```
@@ -217,7 +217,7 @@ sieswi includes a **world-class CSV parser** that you can use in your own Zig pr
 
 ```zig
 const std = @import("std");
-const csv = @import("sieswi").csv;
+const csv = @import("csvq").csv;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -449,7 +449,7 @@ All tools forced to output all rows — no 40-row display tricks.
 
 > **Important**: DuckDB and DataFusion CLIs default to displaying only 40 rows, making them appear much faster than they really are. These benchmarks use `-csv` mode (DuckDB) and `FORMAT CSV` (ClickHouse) to force full output materialization.
 
-| Query | sieswi | DuckDB | DataFusion* | ClickHouse | sieswi vs DuckDB |
+| Query | csvq | DuckDB | DataFusion* | ClickHouse | csvq vs DuckDB |
 |-------|--------|--------|-------------|------------|------------------|
 | **Q1:** WHERE + ORDER BY LIMIT 10 | **0.020s** | 0.179s | 0.243s | 0.750s | 🏆 **9x faster** |
 | **Q2:** ORDER BY LIMIT 10 | **0.041s** | 0.165s | 0.143s | 0.761s | 🏆 **4x faster** |
@@ -461,7 +461,7 @@ All tools forced to output all rows — no 40-row display tricks.
 
 **Memory efficiency**:
 
-- sieswi: 1.8MB
+- csvq: 1.8MB
 - DuckDB: 63.5MB
 - **35x less memory!** 🎯
 
@@ -517,7 +517,7 @@ MIT
 
 ## Acknowledgments
 
-- Original [sieswi](https://github.com/melihbirim/sieswi) by [@melihbirim](https://github.com/melihbirim)
+- Original [csvq](https://github.com/melihbirim/csvq) by [@melihbirim](https://github.com/melihbirim)
 - Competed with [DuckDB](https://duckdb.org/), [DataFusion](https://datafusion.apache.org/), and [ClickHouse](https://clickhouse.com/) — and won! 🏆
 - Inspired by the challenge of beating world-class database engines
 

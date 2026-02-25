@@ -1,7 +1,7 @@
 const std = @import("std");
 const csv = @import("csv");
 
-/// Example: Using sieswi's CSV reader as a library
+/// Example: Using csvq's CSV reader as a library
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
