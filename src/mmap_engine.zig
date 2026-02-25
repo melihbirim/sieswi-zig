@@ -1,14 +1,11 @@
 const std = @import("std");
 const parser = @import("parser.zig");
 const csv = @import("csv.zig");
+const fast_sort = @import("fast_sort.zig");
 const Allocator = std.mem.Allocator;
 
-/// Sort entry for ORDER BY — zero-copy slices into mmap data
-const MmapSortEntry = struct {
-    numeric_key: f64, // pre-parsed numeric value (NaN if not numeric)
-    sort_key: []const u8, // slice into mmap data
-    line: []const u8, // pre-built CSV line in arena
-};
+/// Sort entry for ORDER BY — uses fast_sort SortKey
+const MmapSortEntry = fast_sort.SortKey;
 
 /// Arena buffer for building CSV lines
 const ArenaBuffer = struct {
@@ -268,11 +265,11 @@ pub fn executeMapped(
                     _ = try a.append(field);
                 }
                 const csv_line = a.data[line_buf_start..a.pos];
-                try entries.append(allocator, MmapSortEntry{
-                    .numeric_key = numeric_key,
-                    .sort_key = sort_key,
-                    .line = csv_line,
-                });
+                try entries.append(allocator, fast_sort.makeSortKey(
+                    numeric_key,
+                    sort_key,
+                    csv_line,
+                ));
                 rows_written += 1;
             } else {
                 try writer.writeRecord(output_row);
@@ -293,25 +290,17 @@ pub fn executeMapped(
     // Sort and write buffered rows if ORDER BY
     if (sort_entries) |*entries| {
         if (query.order_by) |order_by| {
-            const Context = struct {
-                descending: bool,
-                pub fn lessThan(ctx: @This(), a: MmapSortEntry, b: MmapSortEntry) bool {
-                    const a_is_num = !std.math.isNan(a.numeric_key);
-                    const b_is_num = !std.math.isNan(b.numeric_key);
-                    if (a_is_num and b_is_num) {
-                        if (ctx.descending) return b.numeric_key < a.numeric_key else return a.numeric_key < b.numeric_key;
-                    }
-                    if (ctx.descending) return std.mem.lessThan(u8, b.sort_key, a.sort_key) else return std.mem.lessThan(u8, a.sort_key, b.sort_key);
-                }
-            };
-            std.mem.sort(MmapSortEntry, entries.items, Context{ .descending = order_by.order == .desc }, Context.lessThan);
+            const limit: ?usize = if (query.limit >= 0) @intCast(query.limit) else null;
+            const sorted = try fast_sort.sortEntries(
+                allocator,
+                entries.items,
+                order_by.order == .desc,
+                limit,
+            );
 
-            var written: i32 = 0;
-            for (entries.items) |entry| {
-                if (query.limit >= 0 and written >= query.limit) break;
+            for (sorted) |entry| {
                 try writer.writeToBuffer(entry.line);
                 try writer.writeToBuffer("\n");
-                written += 1;
             }
         }
     }

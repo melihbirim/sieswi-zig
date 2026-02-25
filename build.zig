@@ -108,4 +108,15 @@ pub fn build(b: *std.Build) void {
     csv_tests.root_module.addImport("csv", csv_test_module);
     const run_csv_tests = b.addRunArtifact(csv_tests);
     test_step.dependOn(&run_csv_tests.step);
+
+    // Fast sort tests (internal module tests)
+    const fast_sort_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .root_source_file = b.path("src/fast_sort.zig"),
+        }),
+    });
+    const run_fast_sort_tests = b.addRunArtifact(fast_sort_tests);
+    test_step.dependOn(&run_fast_sort_tests.step);
 }
